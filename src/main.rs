@@ -1,3 +1,12 @@
+
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(non_snake_case)]
+#![allow(unused_mut)]
+#![allow(unused_assignments)]
+#![allow(unused_imports)]
+#![allow(unreachable_code)]
+#![allow(unused_parens)]
 use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fs::File;
@@ -15,11 +24,16 @@ use std::ops::Neg;
 use std::ops::Rem;
 use std::ops::Sub;
 use std::path::Path;
+use cgmath::Point2;
+use cgmath::Point3;
+use cgmath::Vector3;
+
+use cgmath::Matrix4;
 use float::Sqrt;
 // use float::Sqrt;
 use image::codecs::png::PngEncoder;
 use image::ImageEncoder;
-
+use itertools::Itertools;
 use palette::rgb::Rgb;
 // use num_traits::Float;
 use rand::Rng;
@@ -31,6 +45,60 @@ use std::*;
 
 use palette::{Pixel, Srgb};
 use std::time::Instant;
+mod  materials;
+mod Lights;
+mod integrator;
+mod test_materials;
+ mod texture;
+
+ mod imagefilm;
+ mod imagefilm_test;
+
+ 
+ mod sampler;
+ mod  sampler_test;
+
+ mod samplerhalton;
+ 
+mod bdpt;
+mod bdpt_test;
+
+
+mod Cameras;
+
+
+
+
+
+
+
+
+
+pub type Point2f = Point2<f64>;
+pub type Point2i = Point2<i64>; 
+pub type Bounds2f = (Point2f, Point2f);
+pub type Bounds2i =(Point2i, Point2i);
+
+pub type Point3f = Point3<f64>;
+pub type Point3i = Point3<i64>; 
+ 
+pub type Vector3f = Vector3<f64>;
+pub type Vector3i = Vector3<i64>; 
+
+pub type Matrix4f = Matrix4<f64>;
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[derive(
     Debug,
@@ -120,15 +188,15 @@ impl Metal {
     }
 }
 
-mod materials {
-    use super::*;
+
+   
     pub fn reflect(v :&Point3d, n:&Point3d)->Point3d{
         *v - *n *(2.0 * v.dot(n))
     }
-}
+
 impl Scatterable for Metal {
     fn scatter(&self, ray: &Ray, hit: &HitRecord) -> Option<(Option<Ray>, Srgb)> {
-       let reflect =  materials:: reflect(&ray.direction, &hit.normal);
+       let reflect =  reflect(&ray.direction, &hit.normal);
     //    
        let scattered  = Ray::new(hit.point, reflect + Point3d::random_unit_vector() *self.fuzz);
        let albedo =  self.albedo;
@@ -616,7 +684,7 @@ pub fn hit_world(spheres: &Vec<Sphere>, ray: &Ray, tmin: f64, tmax: f64) -> Opti
     None
 }
 
-pub fn render_write_image(
+ fn render_write_image(
     filename: &str,
     pixels: &[u8],
     bounds: (u32, u32),
@@ -807,59 +875,15 @@ pub fn render(scene: &Scene) {
     .unwrap();
 }
  
-mod primitives;
+  mod primitives;
+  
+mod raytracerv2;
 fn main() -> Result<()> {
-    primitives::main_prim();
-    
+    // primitives::main_prim();
+  //  raytracerv2::main_render_2();
+    raytracerv2::main_render_3();
     return Ok(());
-    // test_hitsphere();
-    // return Ok(());
-    // //  render();
-    // let center = Point3d::new(0.0, 0.0, 0.0);
-    // let ray: Ray = Ray::new(
-    //     Point3d::new(0.0, 0.99999, 2.0),
-    //     Point3d::new(0.0, 0.0, -1.0),
-    // );
-   
-    // let sphere = Sphere::new(Point3d::new(0.0, 0.0, 0.0), 1.0, Material::Lamber(Lambertian::new(Rgb::new(1.0,1.0,1.0))) );
-    // let hit =  sphere.hittable(&ray , 0.001, f64::MAX).unwrap();
-    // tengo que añadir textures , glass y demas
-    // el shadow ray  para hacer las luces.
-    // tengo que añadir la forma recursiva iterative del method usar algo asi como render_recursive() | render_iterative()
-    //  tengo que añadir el fuzz para el metal y poca cosa mas
-    // tengo que  mirar como hacer la matrix
     
-
-
-   let primitives =  vec![
-               //Sphere::new(Point3d::new(0.0, 1.0, 0.0),1.0, Material::Metal(Metal::new(Rgb::new(0.911, 0.10, 0.10),1.0))),
-                Sphere::new(Point3d::new(0.0, 0.5, 1.0), 0.5, Material::Lamber(Lambertian::new(Rgb::new(0.10,0.80,0.10)))),
-                Sphere::new(Point3d::new(2.0, 1.0, 1.0), 1.0, Material::Lamber(Lambertian::new(Rgb::new(0.10,0.80,0.10)))),
-              Sphere::new(Point3d::new(0.0, -200.0, 0.0), 200.0, Material::Lamber(Lambertian::new(Rgb::new(0.10,0.10,0.80)))),
-            ];
-    let lights  = vec![Light::new(  Point3d::new(0.0, 2.0, 0.0),   Srgb::new(0.11, 0.10, 0.10))];
-    let scene = Scene::make_scene(600, 600,lights, primitives, 128,3);
-    let start = Instant::now();
-      render(&scene);
-    println!("Frame time: {}ms", start.elapsed().as_millis());
-
-
-
-    // let camera = Camera::new(
-    //     Point3d::new(0.0, 0.0, 2.0),
-    //     Point3d::new(0.0, 0.0, -1.0),
-    //     Point3d::new(0.0, 1.0, 0.0),
-    //     90.0,
-    //     scene.width as f64 / scene.height as f64,
-    // );
-
-    // let color = get_ray_color(
-    //     &camera.get_ray(0.5, 0.7),
-    //     &scene.primitives,
-    //     &scene.lights,
-    //     &scene,
-    //     1
-    // );
     
 
     Ok(())

@@ -1,6 +1,11 @@
+
 pub mod modulo1 {
     use std::string::*;
     use std::io::*;
+
+
+
+  
     enum  Pets{
         Uno, 
         Dos, 
