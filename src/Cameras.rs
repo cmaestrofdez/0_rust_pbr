@@ -154,9 +154,15 @@ impl PerspectiveCamera {
         let to_raster = self.rasterToCameraMatrix.inverse_transform().unwrap();
         let cameratoraster = to_raster * self.cameraToWorldMatrix.inverse_transform().unwrap();
         let praster = cameratoraster.transform_point(pfocusVS);
+        let siestrue =  praster.y < 0.0 ;
+        let is_praster_y_lesszero  = is_zero_fixed(praster.y) < 0.0 ;
+        let is_praster_x_lesszero  = is_zero_fixed(praster.x) < 0.0 ;
+       let is_praster_x = praster.x<0.0;
+       let is_praster_y =  praster.y<0.0;
         let filmmaxx = self.filmres.0 as f64;
         let filmmaxy = self.filmres.1 as f64;
-        if praster.x < 0.0 || praster.x >= filmmaxx || praster.y < 0.0 || praster.y >= filmmaxy {
+     
+        if  is_praster_x || praster.x >= filmmaxx ||  is_praster_y || praster.y >= filmmaxy {
             return false;
         }
         return true;
@@ -173,21 +179,22 @@ impl PerspectiveCamera {
         let normaldircamera = self
             .cameraToWorldMatrix
             .transform_vector(Vector3f::new(0.0, 0.0, 1.0)).normalize();
-        let next  = (recin.hit.point - pcamera).normalize();
-        println!("{:?}", "hay que hacer una interaction de visibiiilida para hacer el sample_importance");
+        let next  = ( pcamera-recin.hit.point).normalize();
+     //   println!("{:?}", "hay que hacer una interaction de visibiiilida para hacer el sample_importance");
         
 
         let dist = recin.hit.point.distance( pcamera );
         let d2 = dist*dist;
         let absdot = normaldircamera.dot(next).abs();
         let pdf =  d2 / absdot;
+        let negnext = -next;
         
-        let (weight, pworldraster )  =self.weight(Ray::<f64>::new(pcamera, -next));
+        let (weight, pworldraster )  =self.weight(Ray::<f64>::new(pcamera,  negnext ));
         RecordSampleImportanceOut{
             n:next,
             pdf,
             prasterinworld: pworldraster,
-            ray:Some(Ray::<f64>::new(pcamera, -next)),
+            ray:Some(Ray::<f64>::new(pcamera,  negnext)),
             weight
         }
         
@@ -286,4 +293,74 @@ pub fn debug_camera() {
     ));
     println!("{:?}", rec);
     let r = cameraInstance.get_ray(&(6.0,256.0));
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // -1.5258789062500000e-05
+  const   MINUS_ZERO :f64= hexf::hexf64!("-0x1.0p-32") as  f64 ;
+  // +1.5258789062500000e-05
+  const    PLUS_ZERO :f64 = hexf::hexf64!("0x1.0p-32") as  f64 ;
+
+
+  
+  
+fn is_zero_fixed(f:f64)->f64{
+   if is_zero(f) { 0.0 } else { f }
+   
+}
+fn is_zero(f:f64)->bool{
+  
+    if  f.signum()==1.0 as f64 {
+         return  f<PLUS_ZERO 
+   } else {
+    // if f.signum()==-1.0 as f64
+        return   f>MINUS_ZERO
+   }
+   
+}
+#[test]
+pub fn testing_is_zero() {
+    let f =  -1e-17 as f64;
+    let f1 =  -1e-7 as f64; // debe ser 0
+    let f2 =  -1e-4 as f64; // no es  0
+    let plusf =  1e-17 as f64;
+    let plusf1 =  1e-7 as f64; // debe ser 0
+    let plusf2 =  1e-4 as f64; // no es  0
+  
+    assert!(is_zero(f)==true);
+    assert!(is_zero(f1)==true);
+    assert!(is_zero(f2)==false);
+    assert!(is_zero(plusf)==true);
+    assert!(is_zero(plusf1)==true);
+    assert!(is_zero(plusf2)==false);
+//    println!("{:?}", is_zero(f));
+//    println!("{:?}", is_zero(f1));
+//    println!("{:?}", is_zero(f2));
+//    println!("{:?}", is_zero(plusf));
+//    println!("{:?}", is_zero(plusf1));
+//    println!("{:?}", is_zero(plusf2));
 }

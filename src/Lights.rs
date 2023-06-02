@@ -203,9 +203,12 @@ pub struct RecordSampleLightEmissionIn  {
 }
 impl RecordSampleLightEmissionIn{
     pub fn from_sample(  sampler: &mut Box<dyn Sampler>) ->Self{
+        let   u0 = sampler.get2d();
+        let   u1 = sampler.get2d();
+ 
         RecordSampleLightEmissionIn{
-            psample0:sampler.get2d(),
-            psample1:sampler.get2d(),
+            psample0: u0,
+            psample1:u1
         }
     }
 }
@@ -796,7 +799,7 @@ impl<Scalar> IsAreaLight for PointLight<Scalar> {
 impl SampleEmission for PointLight<f64> {
     fn sample_emission(&self, record: RecordSampleLightEmissionIn) -> RecordSampleLightEmissionOut {
         let sampleu = UniformSampleSphere(&record.psample0);
-        // println!("{:?}", record.psample0);
+         
       
         let r = Ray::<f64>::new(Point3::new(self.positionws.x  ,self.positionws.y ,self.positionws.z ),  sampleu.0);
     

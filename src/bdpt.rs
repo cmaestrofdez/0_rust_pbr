@@ -283,7 +283,7 @@ struct PathCameraVtx (
 impl  PathCameraVtx  {
     pub fn new_camerapathvtx(camera:  PerspectiveCamera)->Self{
       
-        PathCameraVtx(0.0,Vector3::new(0.0,0.0,0.0),Point3::new(0.0,0.0,0.0), Srgb::new(0.0,0.0,0.0),(0.0,0.0), camera,None, None, Rc::new(ModifiedVtxAttr::from_zero()))
+        PathCameraVtx(0.0,Vector3::new(0.0,0.0,0.0),Point3::new(0.0,0.0,0.0), Srgb::new(1.00,1.0,1.0),(0.0,0.0), camera,None, None, Rc::new(ModifiedVtxAttr::from_zero()))
     }
     pub fn new_camerapath_init(camera:  PerspectiveCamera, r : Ray<f64>)->Self{
       
@@ -294,8 +294,12 @@ impl  PathCameraVtx  {
         PathCameraVtx(0.0,Vector3::new(0.0,0.0,0.0),Point3::new(0.0,0.0,0.0), Srgb::new(0.0,0.0,0.0),(0.0,0.0), camera,Some(r), Some(hit),Rc::new(ModifiedVtxAttr::from_zero()))
     }
     pub fn new_camerapath_init_(camera:  PerspectiveCamera, r : Ray<f64>,  beta : Srgb , pdf : f64 )->Self{
-      
-        PathCameraVtx(0.0,Vector3::new(0.0,0.0,0.0),Point3::new(0.0,0.0,0.0), Srgb::new(beta.red /(pdf as f32),beta.green /(pdf as f32),beta.blue /(pdf as f32)),(0.0,0.0), camera,Some(r), None, Rc::new(ModifiedVtxAttr::from_zero()))
+     
+        PathCameraVtx(
+                0.0,
+                r.direction.normalize(), 
+                r.origin,  // en mis weight se pide el origen de la camara en world space 
+        Srgb::new(beta.red /(pdf as f32),beta.green /(pdf as f32),beta.blue /(pdf as f32)),(0.0,0.0), camera,Some(r), None, Rc::new(ModifiedVtxAttr::from_zero()))
     }
  }
 
@@ -506,7 +510,21 @@ impl  ConvertDensityBdpt for PathTypes {
 }
 impl  ConvertDensityBdpt for PathCameraVtx{
     fn convert(&self, pdf : f64,  other: & PathTypes ) ->f64{
-         0.0
+        let mut pdfrev = pdf;
+        let v =other.p()- self.p()  ;
+        let d2 = v.magnitude2();
+        if d2 == 0.0 {
+            return 0.0
+        }
+        let inv = 1.0 /  d2;
+        if other.is_on_surface(){
+            let b =  v *    d2.sqrt();;
+            let b = b.normalize();
+            // println!("{:?}",prev.n());
+            // println!("{:?}",b);
+            pdfrev *= other.n() .dot(b).abs();
+        }
+       pdfrev*inv 
     }
 }
 impl  ConvertDensityBdpt for PathLightVtx {
@@ -773,7 +791,19 @@ impl   BdptVtx for PathCameraVtx {
         self.2
     }
     fn pdf(&self, scene:&Scene<f64>, prev :Option<&PathTypes>,  next : &PathTypes) ->f64 {
-        0.0 // pdfWi
+        // raycamera = next.p() surface, self.p() - camera "raster"
+        let mut  vn = next.p() - self.p();
+        if vn.magnitude2() == 0.0 {
+            return 0.0;
+        }
+        vn =  vn.normalize();
+         
+         // este point es cargado cuando hacer  new_camerapath_init_ dentro de cameraTracerStrategy()
+       let pray =  self.2;
+       let (pdfPosimpotance, pdfdirimporance) =  self.5.pdfWemission(&Ray::<f64>::new(pray, vn));
+     //  let pdfarea = self.convert(pdfdirimporance,next );
+     
+     self.convert(pdfdirimporance,next )
     }
     fn get_pdfnext(&self) ->f64 {
        self.4.0
@@ -827,7 +857,7 @@ impl   BdptVtx for PathLightVtx {
         self.1
     }
     fn pdf(&self, scene:&Scene<f64>, prev : Option<&PathTypes>,  next : &PathTypes) ->f64 {
-     
+       let invdist = 1.0/ (next.p() - self.p()).magnitude2();
        let  pdf = self. pdf_light(&next);
        let mut  pdfdir = pdf.1;
 
@@ -837,7 +867,7 @@ impl   BdptVtx for PathLightVtx {
       
        }
    
-        pdfdir // pdflight
+        pdfdir *invdist // pdflight
        
     }
     fn get_pdfnext(&self) ->f64 {
@@ -1030,7 +1060,6 @@ pub fn convert_static(  pdf : f64,current:   &PathTypes , prev:   &PathTypes )  
         // println!("{:?}",b);
         pdfrev *= prev.n() .dot(b).abs();
     }
-  
    pdfrev*inv 
  
 }
@@ -1107,11 +1136,12 @@ pub fn init_light_path(scene:&Scene<f64>, paths :&mut  Vec<PathTypes>,sampler: &
  
    let l =  &scene.lights[0];
    let pdflightselect = 1.0;
-    println!("{:?}", sampler.get2d());
+   let s = sampler.get2d();
+    //  println!("{:?}",s );
    let recout = l.sample_emission(RecordSampleLightEmissionIn ::from_sample(sampler ));
   let a =  recout.n.dot(recout.ray.unwrap().direction).abs() / (recout.pdfdir*recout.pdfpos*pdflightselect);
   let beta =  LigtImportanceSampling::mulScalarSrgb(recout.Lemission,  a as f32);
-;
+
   let lightVtx =  PathTypes::PathLightVtxType(PathLightVtx::from_hitrecord(l.to_owned() ,  HitRecord::from_point(recout.ray.unwrap().origin, recout.n), recout.Lemission,   recout.pdfpos * pdflightselect )) ;
    paths.push(lightVtx );
  //  walk(&recout.ray.unwrap(),  & mut pathlight , beta, recout.pdfdir, scene, sampler, Mode ::from_light);
@@ -1153,27 +1183,33 @@ pub fn cameraTracerStrategy(
     lightpath :&   Vec<PathTypes>,
     camerapath :&   Vec<PathTypes>,
    
-)->Srgb{
-
-   let vtxlight =  &lightpath[s as usize-1];
-   println!("{:?} ", vtxlight.p());
+)->(Srgb, Option<PathTypes>){
+  
+    let vtxlight =  &lightpath[s as usize-1];
+ 
     if vtxlight.is_connectable(){
        let hit =  vtxlight.get_hit().unwrap();
-        let psample =  sampler.get2d();
-       let recout =  camera.sample_importance(RecordSampleImportanceIn{hit,praster:*pfilm,psample});
-       println!("{:?} next {:?} pdf {}", recout.weight , recout.ray.unwrap().direction, recout.pdf );
-       if  recout.checkIfZero() {return Srgb::new(0.0,0.0,0.0)}
-       //     sampled = Vertex::CreateCamera(&camera, vis.P1(), Wi / pdf);
-     let newvtx = PathTypes::PathCameraVtxType(PathCameraVtx::new_camerapath_init_ (camera, recout.ray.unwrap(),   recout.weight , recout.pdf));
-    //    vtx.fr(newvtx);
-    //    vtx.transport();
-    //    newvtx.transport();
-       
-    //    if vtx.is_on_surface(){ 
-       //  let a = recout.0.dot(newvtx.n());
-            
+       let psample =  sampler.get2d();
+       let recout =  camera.sample_importance(RecordSampleImportanceIn{hit,praster:*pfilm,psample}); 
+       if  recout.checkIfZero() {return (Srgb::new(0.0,0.0,0.0), None)}
+       let newvtx = PathTypes::PathCameraVtxType(PathCameraVtx::new_camerapath_init_ (camera, recout.ray.unwrap(),   recout.weight , recout.pdf));
+        //merge path (newvtx, othervtx)
+       let transportfromcamera =   newvtx.transport();
+       let fr = vtxlight.fr(newvtx.clone());
+       let transportfromlight =   vtxlight.transport() ;
+       let first  = LigtImportanceSampling::mulSrgb(transportfromcamera.clone(), fr);
+            let mut  res  = LigtImportanceSampling::mulSrgb(first, transportfromlight.clone());
+            if vtxlight.is_on_surface() {
+                 
+               res =  LigtImportanceSampling::mulScalarSrgb(res,  recout.n.dot(vtxlight .n()).abs() as f32);
+              
+            } 
+              
+           
+            // println!("{:?}", res);
+           return ( res,Some( newvtx ));
        }
-       Srgb::new(0.0,0.0,0.0)
+       (Srgb::new(0.0,0.0,0.0),None)
 
     
 }
@@ -1210,10 +1246,22 @@ pub fn lightTracerStrategy( t : i32,
         let pdfselectedlight = 1.0;
         let  mut newvtx :   PathTypes ;
         let vtxcamerapath =  &camerapath[t as usize -1];
+       if  vtxcamerapath.is_light(){
+        return  (  Srgb::new(0.0,0.0,0.0), None);
+       }
+        
         if  vtxcamerapath.is_connectable(){
+            let u = sampler.get2d();
+            let ulight = sampler.get2d();
+            println!("{:?}", u);
+            println!("{:?}", ulight);
+
+     
+
+            
            let light =  &scene.lights[0];
           
-           let recout = light.sampleIllumination(&RecordSampleLightIlumnation::new(sampler.get2d(), vtxcamerapath.get_hit().unwrap()));
+           let recout = light.sampleIllumination(&RecordSampleLightIlumnation::new(ulight, vtxcamerapath.get_hit().unwrap()));
            if !checkIfZero(recout.1, recout.2){
              let pdfw =( 1.0/  (recout.2*pdfselectedlight)) as f32;
             
@@ -1276,31 +1324,9 @@ pub fn geometricterm( scene:&Scene<f64> , v : &PathTypes, v1 : &PathTypes   )->f
 inv
    
 }
- 
-// pub mod MultipleImportanceSample {
-//     pub fn lights_weights(){}
-//     pub fn camera_weights(){}
-    
-        
-// }
-// println!("  pdfptPdfRev {} ", pdfptPdfRev);
-//     println!("  ptMinusPdfRev {} ", ptMinusPdfRev);
-//     println!("  qspdfRev {} ",  qspdfRev);
-//     println!("  qsminuspdfRev {} ",  qsminuspdfRev);
+   
 pub
-struct ReqWeights(Option<PathTypes>, bool, Option<PathTypes>, bool, f64, f64, f64, f64);
-
-impl ReqWeights {
-    pub fn new(newqs:Option<PathTypes>,deltaqs: bool, newqt:Option<PathTypes>, deltaqt:bool, pdfptPdfRev: f64, ptMinusPdfRev:f64, qspdfRev:f64, qsminuspdfRev:f64)->Self{
-        Self(newqs, deltaqs, newqt, deltaqs, pdfptPdfRev, ptMinusPdfRev, qspdfRev, qsminuspdfRev)
-    }
-    pub fn from_zero()->Self{
-        Self(None, false, None, false,0.0,0.0,0.0,0.0)
-    }
-}
-
-pub
-struct ReqWeights1{
+struct ReqWeights{
     newqs : Option<PathTypes>, 
     deltaqs :Option<bool> ,
     newpt : Option<PathTypes>,
@@ -1311,24 +1337,13 @@ struct ReqWeights1{
      qsminuspdfRev:Option<f64>
 }
 
-impl ReqWeights1 {
+impl ReqWeights {
     pub fn new(newqs: Option<PathTypes>, deltaqs: Option<bool>, newpt: Option<PathTypes>, deltapt: Option<bool>, ptPdfRev: Option<f64>, ptminusPdfRev: Option<f64>, qspdfRev: Option<f64>, qsminuspdfRev: Option<f64>) -> Self { 
         Self { newqs, deltaqs, newpt, deltapt, ptPdfRev, ptminusPdfRev, qspdfRev, qsminuspdfRev } }
 }
 
-pub fn recompute( s:i32, t:i32, scene:&Scene<f64>, sample:Option<PathTypes>, qs:Option<&PathTypes>, pt:Option<&PathTypes>,qsminus:Option<&PathTypes>, ptminus:Option<&PathTypes>) ->ReqWeights1{
-//    if false{
-//     println!("{:?}" ,qs.p());
-//     println!("{:?}" ,pt.p() );
-//     if qsminus.is_some(){
-//         println!("{:?}" ,qsminus.unwrap().p());
-//     }
-//     if ptminus.is_some(){
-//         println!("{:?}", ptminus.unwrap().p());
-//     }
-   
-    
-//    }
+pub fn recompute( s:i32, t:i32, scene:&Scene<f64>, sample:Option<PathTypes>, qs:Option<&PathTypes>, pt:Option<&PathTypes>,qsminus:Option<&PathTypes>, ptminus:Option<&PathTypes>) ->ReqWeights{
+ 
    let mut qssample:Option<PathTypes> = None;
    let mut ptsample:Option<PathTypes> = None;
    if s == 1{
@@ -1352,7 +1367,7 @@ pub fn recompute( s:i32, t:i32, scene:&Scene<f64>, sample:Option<PathTypes>, qs:
            
             pdfptPdfRev = qs.unwrap().pdf(scene, qsminus, pt.unwrap() );
         }else{
-            pt.unwrap().pdf_light(qsminus.unwrap());
+            pdfptPdfRev = pt.unwrap().pdf_light(qsminus.unwrap()).0;
         }
     }
   let mut ptMinusPdfRev= 0.0;
@@ -1366,7 +1381,15 @@ pub fn recompute( s:i32, t:i32, scene:&Scene<f64>, sample:Option<PathTypes>, qs:
     //if (qs) a6 = {&qs->pdfRev, pt->Pdf(scene, ptMinus, *qs)};
    let mut  qspdfRev = 0.0;
     if s> 0{
-        qspdfRev = pt.unwrap().pdf(scene, ptminus, qs.unwrap());
+        // aqui podemos estar sampleando la camara. si asi es entonces tenemos que  obtener la pdf del ptsample
+       if ptsample.is_some(){
+        let ptcamera = ptsample.clone().unwrap();
+        qspdfRev =  ptcamera.pdf(scene, ptminus, qs.unwrap());
+
+       }else {
+         qspdfRev = pt.unwrap().pdf(scene, ptminus, qs.unwrap());
+       }
+       
     }
     // if (qsMinus) a7 = {&qsMinus->pdfRev, qs->Pdf(scene, pt, *qsMinus)};
     let mut  qsminuspdfRev = 0.0;
@@ -1382,7 +1405,7 @@ pub fn recompute( s:i32, t:i32, scene:&Scene<f64>, sample:Option<PathTypes>, qs:
         println!("  qsminuspdfRev {} ",  qsminuspdfRev);
     }
     
-      ReqWeights1::new(qssample, Some(qsDelta), ptsample, Some(ptDelta),  Some(pdfptPdfRev),Some( ptMinusPdfRev), Some(qspdfRev),qsminuspdfRevopt)
+      ReqWeights::new(qssample, Some(qsDelta), ptsample, Some(ptDelta),  Some(pdfptPdfRev),Some( ptMinusPdfRev), Some(qspdfRev),qsminuspdfRevopt)
 
   
    
@@ -1401,7 +1424,14 @@ pub fn update(v:  & mut PathTypes  , attr : ModifiedVtxAttr  ){
 
  
 
- 
+fn is_zero_then(t :f64 , f :f64)->f64{
+    if t == 0.0 {
+        f
+    }else{
+        t
+    }
+
+}
 pub fn compute_ri( s:i32, t:i32,pathlight : & [PathTypes], pathcamera: &[PathTypes])->f64{
     let mut  ri_acum : f64 = 0.0;
     let mut  ri : f64 = 1.0;
@@ -1409,6 +1439,7 @@ pub fn compute_ri( s:i32, t:i32,pathlight : & [PathTypes], pathcamera: &[PathTyp
     for tt in (1..=(t-1)as usize).rev() {
      
          let vtx = &pathcamera[tt];
+         
         if vtx.has_modified_attr() {
           let modattr =  vtx.get_modified_attr();
           let mut  pdfrev =0.0;
@@ -1421,11 +1452,13 @@ pub fn compute_ri( s:i32, t:i32,pathlight : & [PathTypes], pathcamera: &[PathTyp
           }
          
          let pdfnext = vtx.get_pdfnext();
-         ri*= pdfrev /pdfnext;
-        // println!("ri : {}", ri);
+         
+
+         ri*= is_zero_then(pdfrev, 1.0) /is_zero_then(pdfnext, 1.0);
+         
         }else{
             ri *= vtx.get_pdfrev() / vtx.get_pdfnext();
-          //  println!("{}", ri);
+          
         }
         ri_acum+=ri;
     }
@@ -1444,16 +1477,18 @@ pub fn compute_ri( s:i32, t:i32,pathlight : & [PathTypes], pathcamera: &[PathTyp
                  pdfrev = modattr.pdfrev;
               }
             let pdfnext = vtx.get_pdfnext();
-            // println!("{},{}", pdfrev, pdfnext);
-            rilight*= pdfrev /pdfnext;
-      //      println!("ratio pdfrev : {} , pdfnext : {}  : ri : {}", pdfrev , pdfnext, rilight);
+            
+           
+            rilight*=  is_zero_then(pdfrev, 1.0) / is_zero_then(pdfnext, 1.0) ;
+       
            }else{
-                
+           
                 let pdfrev = vtx.get_pdfrev();
                 let pdfnext = vtx.get_pdfnext();
-                rilight *= vtx.get_pdfrev() / vtx.get_pdfnext();
+               
+                rilight *=   is_zero_then(pdfrev, 1.0) / is_zero_then(pdfnext, 1.0) ;
            
-            //     println!("ratio pdfrev : {} , pdfnext : {}  : ri : {}", pdfrev , pdfnext, rilight);
+         
 
            }
            let mut delta_iminus1  = false;
@@ -1465,11 +1500,12 @@ pub fn compute_ri( s:i32, t:i32,pathlight : & [PathTypes], pathcamera: &[PathTyp
            }else {
             delta_iminus1 = pathlight[0].is_deltalight();
            }
+           // pathlight if is a delta light (ie point, pojection) this path is "erased"
            let  delta_i = pathlight[ss].get_modified_attr().delta() ;
-      //      println!("offck");
+      
            if !delta_i && !delta_iminus1 {
             ri_acum+=rilight;
-            // println!("offck");
+       
            }
           
     }
@@ -1505,7 +1541,7 @@ pub fn compute_weights1(s:i32, t:i32, scene:&Scene<f64>, sample:PathTypes,pathli
         // after that swap the order of vertices
         cameraArr =Some(&pathcamera[(t-2) as usize..=(t-1) as usize]);
     }
-    let mut res  = ReqWeights1::new(None,None,None,None,None,None,None,None );;
+    let mut res  = ReqWeights::new(None,None,None,None,None,None,None,None );;
     let lenlights = lights.unwrap().len();
     let lencameraarr = cameraArr.unwrap().len();
     if  lights.is_none() && !cameraArr.is_none() {
@@ -1555,9 +1591,15 @@ pub fn compute_weights1(s:i32, t:i32, scene:&Scene<f64>, sample:PathTypes,pathli
         }
        
        
+        if t == 1{ // sampled camera 
+            update(&mut pathcamera[(t-1) as usize], ModifiedVtxAttr::from_vtx_pdfrev( res.newpt.unwrap(),  res.ptPdfRev.unwrap()));
+        }else{ // regular linked list
+
+            update(&mut pathcamera[(t-1) as usize], ModifiedVtxAttr::from_pdf_delta( res.ptPdfRev.unwrap(),  res.deltapt.unwrap()));
+            update(&mut pathcamera[(t-2) as usize], ModifiedVtxAttr::from_pdf_delta( res.ptminusPdfRev.unwrap(), false));
+        }
+        
        
-      update(&mut pathcamera[(t-1) as usize], ModifiedVtxAttr::from_pdf_delta( res.ptPdfRev.unwrap(),  res.deltapt.unwrap()));
-        update(&mut pathcamera[(t-2) as usize], ModifiedVtxAttr::from_pdf_delta( res.ptminusPdfRev.unwrap(), false));
         /*
         
         update(&mut pathlight[(s-1) as usize], ModifiedVtxAttr::from_pdf_delta(res.qspdfRev.unwrap(), res.deltaqs.unwrap()));
@@ -1694,14 +1736,18 @@ pub fn bidirectional(
         if vtxcamerapath.is_connectable() && vtxlight.is_connectable(){
            let Ll = vtxlight.transport();
            let Lc=  vtxcamerapath.transport();
-           let frl2c =  vtxlight.fr(vtxcamerapath.to_owned());
            let frc2l =  vtxcamerapath.fr(vtxlight.to_owned());
+           let frl2c =  vtxlight.fr(vtxcamerapath.to_owned());
+
+           println!(" radiance : {:?}", vtxcamerapath.fr(vtxlight.to_owned()));
+           println!(" importance  : {:?}", vtxlight.fr(vtxcamerapath.to_owned()));
+
           let g =  geometricterm(scene, &vtxlight, &vtxcamerapath);
           let leftterm = LigtImportanceSampling::mulSrgb(*Ll, frl2c);
           let rightterm =  LigtImportanceSampling::mulSrgb(*Lc, frc2l);
           let L =  LigtImportanceSampling::mulSrgb(leftterm, rightterm);
          let KK =  LigtImportanceSampling::mulScalarSrgb(L, g as f32);
-          
+         
          return KK;
         //  println!("{:?}",KK);
         // println!("vlight.p {:?},vcam.p {:?}", vtxlight.p(), vtxcamerapath.p());

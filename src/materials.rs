@@ -1774,7 +1774,12 @@ impl  Fr  for BsdfType
         match *self {
             BsdfType::Lambertian(l) => {
                 let frame = l.frame.unwrap();
-                l.fr( frame.to_local(&prev).normalize(),  frame.to_local(&next).normalize())
+                let reflect = frame.n.dot(prev) * frame.n.dot(next) > 0.0;
+                let prev = frame.to_local(&prev).normalize();
+                let next  = frame.to_local(&next).normalize();
+                if !reflect {return Srgb::new(0.0,0.0,0.0)};
+
+                l.fr( prev, next )
             },
             BsdfType::MicroFacetReflection(m)=>{
                 let frame = m.frame.unwrap();
@@ -1901,7 +1906,7 @@ impl  Fr for LambertianBsdf
     fn fr(&self, prevlocal: Vector3<f64>, nextlocal: Vector3<f64>) -> Srgb {
             if prevlocal.z == 0.0{return Srgb::new(0.0,0.0,0.0)}
 
-            
+          
             
             Srgb::new( self.albedo.red * f32::consts::FRAC_1_PI, self.albedo.green * f32::consts::FRAC_1_PI,self.albedo.blue * f32::consts::FRAC_1_PI)
     }
