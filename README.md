@@ -1,4 +1,4 @@
 
 proyecto para aprender rust
 physically based render 
-[](img.png)
+[resultado](img.png)
