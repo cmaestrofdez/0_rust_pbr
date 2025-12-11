@@ -1,9 +1,13 @@
 
+use core::panic;
+
+use crate::Vector4f;
 use crate::primitives::prims::Ray;
 use crate::primitives::prims::HitRecord;
 use crate::sampler::Sampler;
 use crate::{Matrix4f, Point3f, Vector3f};
 use cgmath::MetricSpace;
+use cgmath::Vector4;
 use cgmath::{InnerSpace, Matrix, Matrix4, SquareMatrix, Transform};
 use num_traits::float::FloatCore;
 use palette::Srgb;
@@ -76,6 +80,25 @@ pub struct PerspectiveCamera {
     areaVS: f64,
 }
 impl PerspectiveCamera {
+    pub fn lookAt( from:Point3f, to:Point3f)->Matrix4f{
+      let dir =  ( to - from ).normalize();
+      if  Vector3f::new(0.0,1.0,0.0).cross(dir).magnitude() ==0.0 {
+        panic!("vector look at points in the same direction");
+      }
+      
+      let r =         Vector3f::new(0.0,1.0,0.0).cross(dir) .normalize();
+      let up =dir.cross(r).normalize();
+      let c0 = Vector4f::new(r.x   ,r.y  , r.z,0.0);
+      let c1 = Vector4f::new(up.x  ,up.y , up.z,0.0);
+      let c2 =  Vector4f::new(dir.x,dir.y, dir.z,0.0);
+      let c3 = Vector4f::new(from.x,from.y, from.z,1.0);
+      let lookmat = Matrix4f::from_cols(c0, c1, c2, c3);
+    
+//    let lookmat = Matrix4f::from_cols(Vector4f::new(r,0.0), Vector4f::new(up,0.0), Vector4f::new(dir,0.0), Vector4f::new(translation,1.0) );
+    //  println!("{:?}", lookmat);
+    lookmat.invert().unwrap()
+      
+    }
     pub fn perspective(n: f64, f: f64, fov: f64) -> Matrix4f {
         let inv = 1.0 / (f - n);
         let a02 = f * inv;
@@ -127,6 +150,43 @@ impl PerspectiveCamera {
             areaVS: areaVS,
         }
     }
+    pub fn from_lookat(from:Point3f, to:Point3f , n: f64, f: f64, fovy: f64, filmres:  (u32, u32)) -> Self {
+        let aspect = filmres.0 as f64 / filmres.1 as f64;
+        let mut window ;
+        if aspect>1.0{
+            window = ((-aspect, -1.0), (aspect, 1.0));
+        }else{
+            window = ((-1.0, -1.0 / aspect), (1.0, 1.0/aspect));
+        }
+       
+        let  cameraToWorldMatrix = Self::lookAt(from, to);
+        let perspectiveMatrix = PerspectiveCamera::perspective(n, f, fovy);
+        let ndcTofilm =
+            PerspectiveCamera::fromperspectiveSpacetoRaster(&filmres, &window); //
+        let filmtondc = ndcTofilm.inverse_transform().unwrap();
+
+        let filmtoviewMatrix = perspectiveMatrix.inverse_transform().unwrap() * filmtondc;
+       
+        let rasterPmin = filmtoviewMatrix.transform_point(Point3f::new(0.0, 0.0, 0.0));
+        let rasterPmax =
+            filmtoviewMatrix.transform_point(Point3f::new(filmres.0 as f64, filmres.1 as f64, 0.0));
+        let pfilmVSmin = rasterPmin / rasterPmin.z;
+        let pfilmVSmax = rasterPmax / rasterPmin.z;
+        let areaVS = ((pfilmVSmax.x - pfilmVSmin.x) * (pfilmVSmax.y - pfilmVSmin.y)).abs();
+        PerspectiveCamera {
+            focal_length: 1e6,
+            far: f,
+            near: n,
+            fovy,
+            filmres,
+            screenToRasterMatrix: ndcTofilm,
+            rasterToCameraMatrix: filmtoviewMatrix,
+            perspectiveMatrix,
+            rasterToScreenMatrix: filmtondc,
+            cameraToWorldMatrix: cameraToWorldMatrix,
+            areaVS: areaVS,
+        }
+    }
     pub fn area(&self) -> f64 {
         self.areaVS
     }
@@ -139,11 +199,16 @@ impl PerspectiveCamera {
             prastersampler.1,
             0.0,
         ));
-      
+     
         Ray::<f64>::new(
           self.cameraToWorldMatrix.transform_point(Point3f::new(0.0, 0.0, 0.0)),
           self.cameraToWorldMatrix.transform_vector( Vector3f::new(pcamera.x, pcamera.y, pcamera.z).normalize())
         )
+        // Ray::<f64>::new(
+        //      Point3f::new(0.0, 0.0, 0.0),
+        //     Vector3f::new(0.0, 0.0, 0.0).normalize()
+
+        //   )
     }
     fn is_point_inside_film(&self, pWS: Point3f) -> bool {
         let pfocusVS = self
@@ -152,8 +217,14 @@ impl PerspectiveCamera {
             .unwrap()
             .transform_point(pWS);
         let to_raster = self.rasterToCameraMatrix.inverse_transform().unwrap();
-        let cameratoraster = to_raster * self.cameraToWorldMatrix.inverse_transform().unwrap();
-        let praster = cameratoraster.transform_point(pfocusVS);
+        // let w2c = self.cameraToWorldMatrix.inverse_transform().unwrap();
+      
+      
+       let praster = to_raster.transform_point(pfocusVS);
+
+
+        // let cameratoraster = to_raster * self.cameraToWorldMatrix.inverse_transform().unwrap();
+        // let praster = cameratoraster.transform_point(pfocusVS);
         let siestrue =  praster.y < 0.0 ;
         let is_praster_y_lesszero  = is_zero_fixed(praster.y) < 0.0 ;
         let is_praster_x_lesszero  = is_zero_fixed(praster.x) < 0.0 ;
@@ -247,6 +318,7 @@ impl PerspectiveCamera {
 #[test]
 
 pub fn debug_camera() {
+    
     let filmres: (u32, u32) = (512, 512);
     let perspectiveMatrix = PerspectiveCamera::perspective(1e-3, 1000.0, 45.0);
     // println!("{:?}", permat)
@@ -302,7 +374,83 @@ pub fn debug_camera() {
 
 
 
+#[test]
 
+pub fn debug_camera_look() {
+    let filmres: (u32, u32) = (32, 32);
+    let cameranew = PerspectiveCamera::new(1e-3, 1000.0, 45.0, filmres);  
+   let cameralook =  PerspectiveCamera::from_lookat(Point3f::new(0.0,0.0,0.0),Point3f::new(0.0,0.0,11.0),1e-3,1000.0,45.0,filmres);
+   
+   for (i ,j) in itertools::iproduct!(1..32,1..32)  {
+       let p =  (i as f64 / 32.0,j as f64 / 32.0);
+       let rlook =     cameralook.get_ray(&p);
+       let rnew =     cameranew.get_ray(&p);
+       println!("{:?},{:?}", rlook.origin == rnew.origin,  rlook.direction == rnew.direction );
+       
+        for (ii ,jj) in itertools::iproduct!(0..3,0..4)  { 
+            let psample =  (ii as f64 / 32.0,jj as f64 / 32.0);
+           let hit  = HitRecord::from_point(Point3f::new(psample.0,psample.1,1.0), Vector3f::new(0.0,0.0,0.0));
+           let recoutlook =  cameralook.sample_importance(RecordSampleImportanceIn { praster: Point3f::new(p.0, p.1, 0.0), psample, hit  });
+           let recoutnew =  cameranew.sample_importance(RecordSampleImportanceIn { praster: Point3f::new(p.0, p.1, 0.0), psample, hit  });
+            // println!("{:?} {}", recoutlook.weight == recoutnew.weight, recoutlook.pdf ==  recoutnew.pdf);
+       //      println!("{:?} ,{:?}   ", recoutlook.n , recoutnew.n );
+            assert!(recoutlook.weight == recoutnew.weight );
+            assert!(recoutlook.pdf ==  recoutnew.pdf );
+           assert!(recoutlook.n == recoutnew.n ); 
+           assert!(recoutlook.ray.unwrap().direction == recoutnew.ray.unwrap().direction );
+           assert!( recoutlook.ray.unwrap().origin ==  recoutnew.ray.unwrap().origin);
+           assert!(  cameralook.pdfWemission(&recoutlook.ray.unwrap()) == cameranew.pdfWemission(&recoutnew.ray.unwrap()) );
+
+        }
+    //    cameralook.sample_importance(RecordSampleImportanceIn { praster: (), psample: (), hit: () })
+   }
+     
+      
+
+}
+
+
+
+
+
+
+#[test]
+
+pub fn debug_camera_look1() {
+    let w = 8;
+    let filmres: (u32, u32) = (w,w);
+   
+   let cameralook =  PerspectiveCamera::from_lookat(Point3f::new(0.0,1.0,0.0),Point3f::new(0.0,0.0,1.0),1e-2,1000.0,45.0,filmres);
+   
+   for (i ,j) in itertools::iproduct!(0..w,0..w)  {
+    let j = 4;
+    let i = 4;
+       let p =  (j as f64 / w as f64,i as f64 / w as f64);
+       let rlook =     cameralook.get_ray(&p);
+    //    let rnew =     cameranew.get_ray(&p);
+       println!("{} {} {:?} \n   {:?},\n     {:?}",  j,i, p,  rlook.origin  ,  rlook.direction  );
+       
+    //     for (ii ,jj) in itertools::iproduct!(0..3,0..4)  { 
+    //         let psample =  (ii as f64 / 32.0,jj as f64 / 32.0);
+    //        let hit  = HitRecord::from_point(Point3f::new(psample.0,psample.1,1.0), Vector3f::new(0.0,0.0,0.0));
+    //        let recoutlook =  cameralook.sample_importance(RecordSampleImportanceIn { praster: Point3f::new(p.0, p.1, 0.0), psample, hit  });
+    //     //    let recoutnew =  cameranew.sample_importance(RecordSampleImportanceIn { praster: Point3f::new(p.0, p.1, 0.0), psample, hit  });
+    //         // println!("{:?} {}", recoutlook.weight == recoutnew.weight, recoutlook.pdf ==  recoutnew.pdf);
+    //    //      println!("{:?} ,{:?}   ", recoutlook.n , recoutnew.n );
+    //     //     assert!(recoutlook.weight == recoutnew.weight );
+    //     //     assert!(recoutlook.pdf ==  recoutnew.pdf );
+    //     //    assert!(recoutlook.n == recoutnew.n ); 
+    //     //    assert!(recoutlook.ray.unwrap().direction == recoutnew.ray.unwrap().direction );
+    //     //    assert!( recoutlook.ray.unwrap().origin ==  recoutnew.ray.unwrap().origin);
+    //     //    assert!(  cameralook.pdfWemission(&recoutlook.ray.unwrap()) == cameranew.pdfWemission(&recoutnew.ray.unwrap()) );
+
+    //     }
+    //    cameralook.sample_importance(RecordSampleImportanceIn { praster: (), psample: (), hit: () })
+   }
+     
+      
+
+}
 
 
 

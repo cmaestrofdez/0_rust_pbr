@@ -1,6 +1,6 @@
-
 #![allow(dead_code)]
 #![allow(unused_variables)]
+
 #![allow(non_snake_case)]
 #![allow(unused_mut)]
 #![allow(unused_assignments)]
@@ -15,6 +15,7 @@ use std::fs::*;
 use std::io::Error;
 use std::io::ErrorKind;
 use std::io::Result;
+use std::io::Write;
 use std::ops::Add;
 use std::ops::AddAssign;
 use std::ops::Div;
@@ -27,7 +28,8 @@ use std::path::Path;
 use cgmath::Point2;
 use cgmath::Point3;
 use cgmath::Vector3;
-
+ 
+use cgmath::Vector4;
 use cgmath::Matrix4;
 use float::Sqrt;
 // use float::Sqrt;
@@ -41,6 +43,7 @@ use rand::Rng;
 use image::RgbImage;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use volumentricpathtracer::volumetric::Colorf64;
 use std::*;
 
 use palette::{Pixel, Srgb};
@@ -65,10 +68,10 @@ mod bdpt_test;
 
 
 mod Cameras;
+mod scene;
 
 
-
-
+mod macrorules_cheetsheet;
 
 
 
@@ -82,15 +85,34 @@ pub type Bounds2i =(Point2i, Point2i);
 pub type Point3f = Point3<f64>;
 pub type Point3i = Point3<i64>; 
  
+ 
 pub type Vector3f = Vector3<f64>;
 pub type Vector3i = Vector3<i64>; 
+pub type Vector4f = Vector4<f64>;
+pub type Vector4i = Vector4<i64>; 
 
 pub type Matrix4f = Matrix4<f64>;
 
+pub type Spheref64 = primitives::prims::Sphere <f64>;
 
 
 
-
+pub
+trait Lum {
+    fn y(&self)->f64;
+}
+impl Lum for Srgb {
+    fn y(&self)->f64 {
+        (self.red * 0.212671 + self.green * 0.715160 + self.blue*0.072169) as f64
+    }
+}
+impl Lum for Colorf64 {
+    fn y(&self)->f64 {
+    
+        (self.red * 0.212671 + self.green * 0.715160 + self.blue*0.072169) as f64
+    }
+}
+ 
 
 
 
@@ -878,10 +900,129 @@ pub fn render(scene: &Scene) {
   mod primitives;
   
 mod raytracerv2;
+ mod threapoolexamples;
+ mod threapoolexamples1;
+
+
+ mod bdpt2;
+ mod metropolis;
+ mod volumentricpathtracer;
+ 
+
+
+//  trait MiTrait {
+//      fn get1d(& mut self);
+//  }
+//  struct Objt {
+     
+//  }
+//  impl MiTrait for Objt {
+//       fn get1d(& mut self) {}
+      
+//  }
+//  pub fn miestiamtionstrategy<T : MiTrait>(t:&mut T){
+
+//  }
+//  pub fn merge_connection<T : MiTrait>(t:&mut T){
+//     miestiamtionstrategy(t);
+
+//  }
+//  pub fn pseudo_main(){
+//      let mut t = Objt{};
+//      merge_connection(& mut t);
+//  }
+//  if args.len() > 1 {
+        
+//     if &args[1]=="low" {
+        
+//         let start = Instant::now();
+//         println!("low conf  spp=8 dims = (339, 256)" );
+//         testing_bppt_tracing_and_connection_sampler_with_film(64,(256/2/2, 256/2/2));
+//         println!("Frame time: {} ms", start.elapsed().as_millis());
+//         println!("low conf  spp=8 dims = (339, 256)" );
+//     }else if &args[1]=="med"  {
+//         let start = Instant::now();
+//         println!("med conf  spp=256 dims = (339, 256)" );
+//         testing_bppt_tracing_and_connection_sampler_with_film(256,(339, 256));
+//         println!("Frame time: {} ms", start.elapsed().as_millis());
+//         println!("med conf  spp=256 dims = (339, 256)" );
+//     }else if &args[1]=="hight"  {
+//         let start = Instant::now();
+//         println!("low conf  spp=512 dims = (512, 512)" );
+//         testing_bppt_tracing_and_connection_sampler_with_film(512,(339, 512));
+//         println!("Frame time: {} ms", start.elapsed().as_millis());
+//         println!("low conf  spp=512 dims = (512, 512)" );
+//     }
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Config{
+    spp: i32, 
+    w : i64, 
+    h: i64, 
+    depth:i32, 
+    filename: Option<String>,  
+    times:Option<Vec<f64>>,
+    directory: Option<String>,
+    
+}
+impl  Config {
+    pub fn from_args(spp:i32, w:i64, h:i64, depth : i32, directory: Option<String> ,filename: Option<&str>)->Self{
+        if filename.is_some(){
+            let newfilename = filename.unwrap().to_string().replace(".png", "");
+            let newfilenameformat  =  format!("{}_spp_{}_w{}_h{}_depth{}",newfilename, spp, w, h, depth,);
+            
+           return  Config { spp, w , h   , depth,directory, filename : Some(newfilenameformat) ,times: None}
+        }
+        return  Config { spp, w , h   , depth,directory:None, filename : None ,times: None}
+        
+    } 
+    pub fn from_config(config:&Config, time : Instant)->Self{
+       
+  
+        Config {  depth : config.depth, spp:config.spp, directory:config.directory.clone(), w : config.w, h:config.h, filename:config.filename.clone(),times:Some( vec![time.elapsed().as_secs_f64()])}
+    }
+    pub fn save(&self){
+        let dirpath : &Path = Path::new(self.directory.as_ref().unwrap());
+        if  fs::create_dir_all(dirpath).is_err() {
+            panic!(" fs::create_dir_all has throwned a error trying created file directory : {:?}", dirpath.as_os_str())
+
+        }
+        let final_filename =  &dirpath .join(self.filename.as_ref().unwrap().replace(".png", "_") + "_info.json");
+        let mut file = File::create(final_filename).unwrap_or_else(|op|panic!("{}",op));
+        let buffer  = serde_json::to_string(self). unwrap();
+        file.write_all(buffer.as_bytes());
+  
+    }
+}
 fn main() -> Result<()> {
+
     // primitives::main_prim();
   //  raytracerv2::main_render_2();
-    raytracerv2::main_render_3();
+    // raytracerv2::main_render_3();
+    // 
+    // threapoolexamples::main_crossbeam();
+    //  threapoolexamples::main_test_intersection_first_box();
+    //  threapoolexamples::main_test_intersection_second_box();
+    //  threapoolexamples::main_test_intersection_third_box();
+    //  threapoolexamples::main_test_intersection_four_par_item();
+    //  threapoolexamples::main_test_intersection_5_par_item();
+    //  threapoolexamples::main_test_intersection_6_crossbeam();
+    //  threapoolexamples::main_test_intersection_6_serial_way();
+   //  threapoolexamples::main_test_intersection();
+
+// threapoolexamples1::par_render();
+// threapoolexamples1::render_brute_force_();
+
+// metropolis::metro_debug();
+//  integrator::main_render();
+// metropolis::metro_main();
+// volumentricpathtracer::volumetric::
+
+
+
+//    let args: Vec<_> = env::args().collect();
+//   bdpt_test::bdpt_tracing_MAIN(args);
+   
+ 
     return Ok(());
     
     

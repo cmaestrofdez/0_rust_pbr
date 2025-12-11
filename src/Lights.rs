@@ -14,25 +14,25 @@ use std::path::Path;
 
 use crate::{
     assert_delta,
-    integrator::{updateL, estimatelights},
+    integrator::{updateL, estimatelights, new_interface_estimatelights, isBlack},
     materials::{
         AbsCosTheta, BeckmannDistribution, BsdfType, Fr, FrameShading, Fresnel, FresnelNop,
         MaterialDescType, MicroFaceDistribution, MicroFacetReflection, Pdf, Plastic,
         RecordSampleIn, SampleIllumination, SphPhi, SphTheta, SphericalCoords,
-        TrowbridgeReitzDistribution, UniformSampleConePdf, UniformSampleSemisphere, UniformSampleSphere, UniformSampleSpherePdf,
+        TrowbridgeReitzDistribution, UniformSampleConePdf, UniformSampleSemisphere, UniformSampleSphere, UniformSampleSpherePdf, CosSampleH2, CosSampleH2Pdf,
     },
     primitives::{
-        prims::{self, HitRecord, IntersectionOclussion, Ray, Sphere},
-        Disk, Plane, PrimitiveIntersection,
+        prims::{self, HitRecord, IntersectionOclussion, Ray, Sphere, coord_system},
+        Disk, Plane, PrimitiveIntersection, PrimitiveType, Cylinder,
     },
     raytracerv2::{clamp, powerHeuristic, Camera},
     raytracerv2::{interset_scene, Scene},
-    sampler::{Sampler, custom_rng::CustomRng, SamplerUniform},
-    Metal, Vector3f, Point3f,
+    sampler::{Sampler, custom_rng::CustomRng, SamplerUniform, SamplerType},
+    Metal, Vector3f, Point3f, scene::Scene1, threapoolexamples1::{new_interface_for_intersect_scene, new_interface_for_intersect_occlusion, new_interface_for_intersect_scene_surfaces}, Spheref64,
 };
-use cgmath::{Decomposed, Deg, InnerSpace, Point3, Quaternion, Transform, Vector3, MetricSpace};
+use cgmath::{Decomposed, Deg, InnerSpace, Point3, Quaternion, Transform, Vector3, MetricSpace, Matrix3, AbsDiffEq};
 use num_traits::Float;
-use palette::Srgb;
+use palette::{Srgb, white_point::A, LinSrgb};
 use rand::Rng;
 
 #[derive(Clone, Debug)]
@@ -47,9 +47,7 @@ impl Distribution1d {
 
         cdf[0] = 0.0;
         for (i, x) in a.iter().enumerate() {
-            if i == 0 {
-                continue;
-            }
+            if i == 0 {continue;}
             cdf[i] = cdf[i - 1] + a[i - 1] / (a.len() as f64);
         }
         cdf[a.len()] = cdf[a.len() - 1] + a[a.len() - 1] / (a.len() as f64);
@@ -211,6 +209,23 @@ impl RecordSampleLightEmissionIn{
             psample1:u1
         }
     }
+    pub fn from_sampletype(  sampler: &mut SamplerType) ->Self{
+        let   u0 = sampler.get2d();
+        let   u1 = sampler.get2d();
+ 
+        RecordSampleLightEmissionIn{
+            psample0: u0,
+            psample1:u1
+        }
+    }
+    pub fn from_sample2dx2d(  u0 :(f64, f64) , u1:(f64, f64)) ->Self{
+     
+ 
+        RecordSampleLightEmissionIn{
+            psample0: u0,
+            psample1:u1
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -233,8 +248,52 @@ pub trait SampleEmission  {
     fn sample_emission(&self, record: RecordSampleLightEmissionIn  )-> RecordSampleLightEmissionOut  ;
     
 } 
+
+
+
+
+
+
+
+
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct RecordPdfEmissionIn  {
+ 
+    pub  n : Vector3f,
+    pub  ray : Option<Ray<f64>>
+}
+
+
+impl  RecordPdfEmissionIn{
+    pub fn from_hitrecord(   n : Vector3f,ray : Option<Ray<f64>>) ->Self{
+        RecordPdfEmissionIn{  n, ray}
+    }
+}
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct RecordPdfEmissionOut  {
+ 
+    pub  pdfpos : f64,
+    pub  pdfdir :  f64,
+}
+
+
+impl  RecordPdfEmissionOut {
+   pub fn new( pdfpos : f64 ,  pdfdir:f64 )->Self{
+    RecordPdfEmissionOut { pdfpos, pdfdir }
+
+   }
+}
+impl Default for RecordPdfEmissionOut {
+    fn default() -> Self {
+        RecordPdfEmissionOut { pdfpos:0.0, pdfdir:0.0 }
+    }
+}
 pub trait PdfEmission  {
-    fn pdf_emission(&self )-> RecordSampleLightEmissionOut ;
+    fn pdf_emission(&self , rec : RecordPdfEmissionIn )-> RecordPdfEmissionOut ;
     
 }
 
@@ -285,6 +344,9 @@ pub trait SampleLightIllumination: IsAreaLight {
     fn getPositionws(&self) -> Point3<f64>;
 }
 
+pub trait NumSamples {
+    fn num_samples(&self) -> u32;
+}
 pub trait IsAreaLight {
     fn is_arealight(&self) -> bool;
 }
@@ -308,7 +370,7 @@ pub trait GetEmission {
 pub trait PdfIllumination {
     fn pdfIllumination(&self, hit: &HitRecord<f64>, scene: &Scene<f64>, next: Vector3<f64>) -> f64;
 }
-
+ 
 #[derive(Clone, Debug)]
 pub enum Light {
     PointLight(PointLight<f64>),
@@ -318,8 +380,27 @@ pub enum Light {
     AreaLightSphere(AreaLightSphere),
     BackgroundAreaLightType(BackgroundAreaLight),
     AmbientLightType(AmbientLight),
+    New_Interface_AreaLightType(New_Interface_AreaLight),
+    NoneLightType,
 }
 
+
+impl NumSamples for Light {
+    fn num_samples(&self) -> u32 {
+        match self {
+            Light::New_Interface_AreaLightType(a)=>a.num_samples(),
+            _ => panic!("Light:: not yet? implented area li"),
+        }
+        // Light::PointLight(l) => l.is_arealight(),
+        // Light::SpotLightType(a) => false,
+        // Light::AreaLightType(a) => a.is_arealight(),
+        // Light::AreaLightDiskType(a) => a.is_arealight(),
+        // Light::BackgroundAreaLightType(a) => a.is_arealight(),
+        // Light::AmbientLightType(a)=>a.inner_is_arealight(),
+        // Light::AreaLightSphere(a)=>true,
+     
+    } 
+}
 impl IsAreaLight for Light {
     fn is_arealight(&self) -> bool {
         match &*self {
@@ -330,6 +411,7 @@ impl IsAreaLight for Light {
             Light::BackgroundAreaLightType(a) => a.is_arealight(),
             Light::AmbientLightType(a)=>a.inner_is_arealight(),
             Light::AreaLightSphere(a)=>true,
+            Light::New_Interface_AreaLightType(a)=>a.is_arealight(),
             _ => panic!("Light:: not yet? implented area li"),
         }
     }
@@ -344,6 +426,8 @@ impl IsAmbientLight for   Light {
             Light::BackgroundAreaLightType(a) => false,
             Light::AmbientLightType(a)=>true,
             Light::AreaLightSphere(a)=>false,
+            Light::New_Interface_AreaLightType(a)=>false,
+            _ => panic!("Light:: not yet?  "),
         }
     }
 }
@@ -358,6 +442,8 @@ impl IsBackgroundAreaLight for Light {
             Light::BackgroundAreaLightType(a) => true,
             Light::AmbientLightType(a)=>false,
             Light::AreaLightSphere(a)=>false,
+            Light::New_Interface_AreaLightType(a)=>false,
+            _ => panic!("Light:: not yet?  "),
         }
     }
 }
@@ -372,11 +458,47 @@ impl GetShape for Light {
             Light::BackgroundAreaLightType(a) => a.get_shape(),
             Light::AmbientLightType(a)=>  panic!("spot lihgt is  not a area light"),
             Light::AreaLightSphere(a)=>a.get_shape(),
+            Light::New_Interface_AreaLightType(a)=>a.get_shape(),
             _ => panic!("Light::sampleIllumination"),
+ 
+        }
+    }
+}
+impl GetShape1 for Light {
+    fn get_shape1(&self) ->&PrimitiveType{
+        match  self {
+            // Light::PointLight(l) => panic!("point lihgt is  not a area light"),
+            // Light::SpotLightType(l) => panic!("spot lihgt is  not a area light"),
+            // Light::AreaLightType(a) => a.get_shape(),
+            // Light::AreaLightDiskType(a) => a.get_shape(),
+            // Light::BackgroundAreaLightType(a) => a.get_shape(),
+            // Light::AmbientLightType(a)=>  panic!("spot lihgt is  not a area light"),
+            // Light::AreaLightSphere(a)=>a.get_shape(),
+            Light::New_Interface_AreaLightType(a)=>a.get_shape1(),
+            _ => panic!("Light::sampleIllumination"),
+ 
         }
     }
 }
 
+
+impl PdfIllumination1 for Light {
+    fn pdfIllumination1(&self, hit: &HitRecord<f64>, scene: &Scene1, next: Vector3<f64>) -> f64 {
+        match &*self {
+            // Light::PointLight(l) => panic!("point light is  not a area light"),
+            // Light::SpotLightType(l) => panic!("spot oint light is  not a area light"),
+            // Light::AreaLightType(a) => a.pdfIllumination(hit, scene, next),
+            // Light::AreaLightDiskType(a) => a.pdfIllumination(hit, scene, next),
+            // Light::BackgroundAreaLightType(a) => a.pdfIllumination(hit, scene, next),
+            // Light::AmbientLightType(a)=>  panic!("Ambient light is  not a area light pdf.  "),
+            // Light::AreaLightSphere(a)=>a.pdfIllumination(hit, scene, next),
+            Light::New_Interface_AreaLightType(a)=>a.pdfIllumination1(hit, scene, next),
+            _ => panic!("Light:: not yet?  "),
+        }
+    }
+}
+
+ 
 impl GetEmission for Light {
     fn get_emission(&self, hit: Option<HitRecord<f64>>, r: &Ray<f64>) -> Srgb {
         match &*self {
@@ -387,6 +509,7 @@ impl GetEmission for Light {
             Light::BackgroundAreaLightType(a) => a.get_emission(hit, r),
             Light::AmbientLightType(a)=>  panic!("Ambient lihgt is  not a area light, lacks  emission"),
             Light::AreaLightSphere(a)=>a.get_emission(hit,r),
+            Light::New_Interface_AreaLightType(a)=>a.get_emission(hit, r),
             _ => panic!("Light::sampleIllumination"),
         }
     }
@@ -402,7 +525,8 @@ impl PdfIllumination for Light {
             Light::BackgroundAreaLightType(a) => a.pdfIllumination(hit, scene, next),
             Light::AmbientLightType(a)=>  panic!("Ambient light is  not a area light pdf.  "),
             Light::AreaLightSphere(a)=>a.pdfIllumination(hit, scene, next),
-        
+            // Light::New_Interface_AreaLightType(a)=>a.pdfIllumination(hit, scene, next),
+            _ => panic!("Light:: not yet?  "),
         }
     }
 }
@@ -426,7 +550,8 @@ impl SampleLightIllumination for Light {
             Light::BackgroundAreaLightType(a) => a.sampleIllumination(phit),
             Light::AmbientLightType(a)=>  a.inner_sampleIllumination(phit),
             Light::AreaLightSphere(a)=>a.sampleIllumination(phit),
- 
+            Light::New_Interface_AreaLightType(a)=>a.sampleIllumination(phit),
+            _ => panic!("Light:: not yet?  "),
         }
     }
     fn getPositionws(&self) -> Point3<f64> {
@@ -438,7 +563,8 @@ impl SampleLightIllumination for Light {
             Light::BackgroundAreaLightType(a) => a.getPositionws(),
             Light::AmbientLightType(a)=>  panic!(""),
             Light::AreaLightSphere(a)=>panic!(""),
-             
+            Light::New_Interface_AreaLightType(a)=>panic!("Light::New_Interface_AreaLightType getPositionws "),
+            _ => panic!("Light:: not yet?  "),
         }
     }
 }
@@ -452,8 +578,10 @@ impl SampleLightIllumination for Light {
 
 impl SampleEmission for Light {
     fn sample_emission(&self, record: RecordSampleLightEmissionIn) -> RecordSampleLightEmissionOut {
-        match &*self {
+        match self {
             Light::PointLight(p)=>p.sample_emission(record),
+            Light::AreaLightDiskType(p)=>p.sample_emission(record),
+            Light::New_Interface_AreaLightType(p)=>p.sample_emission(record),
             _=>todo!()
         }
     }
@@ -462,9 +590,11 @@ impl SampleEmission for Light {
 
 
 impl PdfEmission for Light {
-    fn pdf_emission(&self ) -> RecordSampleLightEmissionOut {
-        match &*self {
-                   Light::PointLight(p)=>p.pdf_emission(),
+    fn pdf_emission(&self , rec :  RecordPdfEmissionIn) -> RecordPdfEmissionOut {
+        match self {
+                   Light::PointLight(p)=>p.pdf_emission(rec),
+                   Light::AreaLightDiskType(p)=>p.pdf_emission(rec),
+                   Light::New_Interface_AreaLightType(p)=>p.pdf_emission(rec),
                     _=>todo!()
         }
     }
@@ -693,29 +823,7 @@ impl SpotLight {
 
 #[test]
 fn test_spotlight() {
-    //    {
-    //         let spot = SpotLight::new(Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.0,-1.0, 0.0), Srgb::new(1.0,1.0,1.0), 80.0, 78.0);
-
-    //         for i in 0..100{
-
-    //             let f =  spot.fallout(Vector3::new(0.0, i as f64 / 10.0 ,0.10).normalize());
-    //         //     println!("{:?}",f );
-    //         }
-
-    //    }
-    //    {
-    //     let spot = SpotLight::new(Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.0,-1.0, 0.0), Srgb::new(1.0,1.0,1.0), 30.0, 10.0);
-
-    //     for i in 0..100{
-
-    //        //  println!("{:?}",spot.inner_sampleIllumination_debug(&Point3::new(0.0,0.0,i as f64 / 100.0)).1 );
-    //     }
-    //     for i in 0..100{
-
-    //       //   println!("{:?}",spot.inner_sampleIllumination_debug(&Point3::new(i as f64 / 100.0,0.0,0.0)).1.red );
-    //     }
-
-    // }
+     
     {
         let vdirspot = (Point3::new(0.0, 1.0, 0.0) - Point3::new(0.10, 0.0, 0.0)).normalize();
         let spot = SpotLight::new(
@@ -816,9 +924,9 @@ impl SampleEmission for PointLight<f64> {
 }
 
 impl <Scalar> PdfEmission for PointLight<Scalar> {
-    fn pdf_emission(&self   ) -> RecordSampleLightEmissionOut {
-        
-        RecordSampleLightEmissionOut::from_hitrecord(Srgb::new(0.0,0.0,0.0),0.0, UniformSampleSpherePdf() , Vector3f::new(0.0,0.0,0.0), None)
+    fn pdf_emission(&self ,rec :  RecordPdfEmissionIn  ) -> RecordPdfEmissionOut {
+        // uniform sample Sphere Inv4Pi = 0.07957747154594766788;
+        RecordPdfEmissionOut::new(0.0,  0.07957747154594766788)
     } 
     
 }
@@ -963,11 +1071,314 @@ impl SampleLightIllumination for AreaLight {
     }
 }
 
+
+
+#[derive(Clone, Debug)]
+pub struct New_Interface_AreaLight {
+    pub color: Srgb, 
+    pub shape : PrimitiveType,
+    pub num_samples:u32,
+    
+}
+impl  New_Interface_AreaLight  {
+    pub fn new( lemission: Srgb,shape : PrimitiveType,num_samples:u32) ->  New_Interface_AreaLight  {
+        New_Interface_AreaLight { color:lemission, shape, num_samples }
+        
+    }
+}
+
+
+
+impl  NumSamples for New_Interface_AreaLight {
+    fn num_samples(&self) -> u32 {
+        self.num_samples
+    } 
+}
+
+
+
+impl IsAreaLight for New_Interface_AreaLight {
+    fn is_arealight(&self) -> bool {
+        true
+    }
+}
+
+
+impl GetShape for New_Interface_AreaLight {
+    fn get_shape(&self) -> Option<Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>> {
+       None
+    }
+}
+
+
+
+
+impl GetEmission for New_Interface_AreaLight  {
+    fn get_emission(&self, hit: Option<HitRecord<f64>>, r: &Ray<f64>) -> Srgb {
+        //   self.plane.sample(psample)
+        //  tengo  que poner la luz mirando al suelo  de modo que de bien
+
+        if hit.unwrap().prev.unwrap().dot(hit.unwrap().normal) > 0.0 {
+            self.color
+            
+        } else {
+            Srgb::new(0.0, 0.0, 0.0)
+        }
+    }
+}
+pub
+trait PdfIllumination1    {
+    fn pdfIllumination1(&self, hit: &HitRecord<f64>, scene: &Scene1, next: Vector3<f64>) -> f64 ;
+}
+ 
+ 
+pub fn generic_shape_pdfillumination(hit: &HitRecord<f64>, scene: &Scene1, next: Vector3<f64>, areashape:f64) -> f64{
+    let r = Ray::new(hit.point, next);
+    let ohitlight = new_interface_for_intersect_scene(&r, &scene);
+    match ohitlight{
+        Some( hitlight)=>{
+            let distance2 = (hit.point - hitlight.point).magnitude2();
+            
+            let solidangle = (-next).dot(hitlight.normal).abs();
+            let a = areashape;
+            let pdf = distance2 / (solidangle * a);
+            pdf
+        },
+        None => {
+             0.0
+        } 
+    }
+   
+}
+impl PdfIllumination1 for New_Interface_AreaLight {
+    fn pdfIllumination1(&self, hit: &HitRecord<f64>, scene: &Scene1, next: Vector3<f64>) -> f64 {
+        //      next = ray
+        //         /
+        // hit.p__/______________
+    //     let r = Ray::new(hit.point, next);
+    //     hay que hacer el pdf PdfIllumination en la sphere en pbrt
+    //   Sphere  304  Float Sphere::Pdf(const Interaction &ref, const Vector3f &wi) const {
+    //    match  self.shape {
+    //         PrimitiveType::SphereType(s)=>{s.pdfIllumination()},
+    //         PrimitiveType::CylinderType || PrimitiveType::DiskType =>{
+    //             si esto es una spehere tenemos que calcular la pdf de la manera de la esphere si lo es de otro modo usamos el generico 
+    //             que es este codigo. 
+    //              let ohitlight = new_interface_for_intersect_scene(&r, &scene);
+    //              match ohitlight{
+    //                      Some( hitlight)=>{
+         
+         
+    //                          let distance2 = (hit.point - hitlight.point).magnitude2();
+    //                          let solidangle = (-next).dot(hit.normal).abs();
+    //                          let a = self.shape.area();
+    //                          let pdf = distance2 / (solidangle * a);
+    //                          pdf
+    //                      },
+    //                      None => {
+    //                          0.0
+    //                      } 
+    //              }
+    //         }
+    //        _=>0.
+    //    } 
+        match  &self.shape {
+            PrimitiveType::CylinderType(c) => {
+                generic_shape_pdfillumination(hit, scene, next, c.area())
+             //   todo!()
+            },
+            PrimitiveType::DiskType(s) =>{
+                generic_shape_pdfillumination(hit, scene, next, s.area())
+               // todo!()
+            },
+            PrimitiveType::SphereType(p) => p.pdfIllumination1(hit, scene, next),
+        }
+       
+        // mide la distancia desde la superficie con el angulo next hasta la luz c
+    }
+}
+
+pub trait GetShape1 {
+    fn get_shape1(&self) -> &PrimitiveType;
+}
+
+impl GetShape1 for New_Interface_AreaLight {
+    fn get_shape1(&self) ->&PrimitiveType {
+      &self.shape
+    }
+}
+
+
+
+
+
+impl SampleLightIllumination for New_Interface_AreaLight {
+    fn sampleIllumination(
+        &self,
+        phit: &RecordSampleLightIlumnation,
+    ) -> (
+        Vector3<f64>,
+        Srgb,
+        f64,
+        Option<Ray<f64>>,
+        Option<Point3<f64>>,
+    ) {
+        if let  PrimitiveType::SphereType(shape)  =  &self.shape  {
+            let psample = self.shape.sample_ref(phit.hit.point,phit.psample);
+            let ptplane = psample.0; 
+            let ptnormal = psample.1;
+            let vnext = (ptplane - phit.hit.point).normalize(); 
+            (ptnormal,self.color ,psample.2 , Some( Ray::new(phit.hit.point, vnext) ), Some(psample.0))
+        }else{
+            // disk and cilinder onversion solid angle to area measure
+
+            let psample = self.shape.sample_ref(phit.hit.point,phit.psample);
+       
+       
+            let ptplane = psample.0;
+    
+            let ptnormal = psample.1.normalize();
+            let mut pdf = psample.2;
+            let  mut Ld = self.color; 
+            let mut vnext = (ptplane - phit.hit.point);
+            if vnext.magnitude2() == 0.0 {
+                pdf = 0.0;
+            } else {
+                vnext = vnext.normalize();
+               
+                let num = (ptplane - phit.hit.point).magnitude2();
+                let w = -vnext;
+                let den = w.dot(ptnormal);
+                if den <= 0.0 {
+                    Ld = Srgb::new(0.0, 0.0, 0.0);
+                }
+                //---- convert area!!-----
+                let den = w.dot(ptnormal).abs();
+                let pdfrat = num / (den);
+    
+                if pdfrat == std::f64::INFINITY {
+                    pdf = 0.0;
+                } else {
+                    pdf = pdf * pdfrat
+                }
+            }
+            let vnext = (ptplane - phit.hit.point).normalize();  
+            (ptnormal, Ld, pdf, Some( Ray::new(phit.hit.point, vnext) ), Some(psample.0))
+        }
+
+         
+    //     let psample = self.shape.sample_ref(phit.hit.point,phit.psample);
+       
+       
+    //     let ptplane = psample.0;
+
+    //     let ptnormal = psample.1;
+    //     let mut pdf = psample.2;
+    //     let  mut Ld = self.color; 
+    //     let mut vnext = (ptplane - phit.hit.point);
+    //     if vnext.magnitude2() == 0.0 {
+    //         pdf = 0.0;
+    //     } else {
+    //         vnext = vnext.normalize();
+           
+    //         let num = (ptplane - phit.hit.point).magnitude2();
+    //         let w = -vnext;
+    //         let den = w.dot(ptnormal);
+    //         if den <= 0.0 {
+    //             Ld = Srgb::new(0.0, 0.0, 0.0);
+    //         }
+    //         //---- convert area!!-----
+    //         let den = w.dot(ptnormal).abs();
+    //         let pdfrat = num / (den);
+
+    //         if pdfrat == std::f64::INFINITY {
+    //             pdf = 0.0;
+    //         } else {
+    //             pdf = pdf * pdfrat
+    //         }
+    //     }
+    //     let vnext = (ptplane - phit.hit.point).normalize(); 
+        
+       
+    //     //TODO: esta normal latengo que meter en el constructor de disk
+    // //    if self.shape.trafo_vec_to_world(Vector3::new(0.0,0.0,1.0)).normalize().dot(-vnext) < 0.0{
+    // //     Ld = Srgb::new(0.0,0.0,0.0);
+    // //    }
+     
+    //     (ptnormal, Ld, pdf, Some( Ray::new(phit.hit.point, vnext) ), Some(psample.0))
+    }
+    fn getPositionws(&self) -> Point3<f64> {
+        panic!("")
+    }
+}
+
+
+
+impl SampleEmission for New_Interface_AreaLight{
+    fn sample_emission(&self, record: RecordSampleLightEmissionIn  )-> RecordSampleLightEmissionOut {
+   
+        // (  Point3f::default_epsilon(), Vector3f::default_epsilon() , 0.0);
+       let recordshape = self.shape.sample(record.psample0);
+   // let recordshape =  (  Point3f::new(0.0,0.0,0.0), Vector3f::new(0.0,0.0,0.0) , 0.0);;
+        
+        let n = recordshape.1.normalize();
+        let v =   CosSampleH2(&record.psample1);
+       let pdfdir =  CosSampleH2Pdf(v.z);
+   
+       let ( v0, v1 ) = coord_system(n);
+       let dir = v.x * v0 + v.y * v1 + v.z * n;
+    
+      let  mut L : Srgb;
+      if n.dot(dir) > 0.0 {
+         L = self.color;
+       
+      }else{
+         L = Srgb::new(0.0,0.0,0.0);
+      }
+     
+        RecordSampleLightEmissionOut{
+            Lemission:L,
+            pdfdir,
+            pdfpos:recordshape.2,
+            n:recordshape.1.normalize(),
+             ray:Some(Ray::new(recordshape.0, dir.normalize())),
+        }
+    }
+}
+
+ 
+impl  PdfEmission for New_Interface_AreaLight{
+    fn pdf_emission(&self , rec :  RecordPdfEmissionIn ) -> RecordPdfEmissionOut {
+       
+       
+       let z =rec.n.dot(rec.ray.unwrap().direction);
+       RecordPdfEmissionOut::new( 1.0/self.shape.area(), CosSampleH2Pdf(z));
+       RecordPdfEmissionOut::new( 1.0/self.shape.area(), CosSampleH2Pdf(rec.n.dot(rec.ray.unwrap().direction) )) 
+    } 
+    
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #[derive(Clone, Debug)]
 pub struct AreaLightDisk {
     pub color: Srgb,
     pub positionws: Point3<f64>,
     pub disk: Disk,
+    
 }
 impl AreaLightDisk {
     pub fn new(
@@ -984,8 +1395,9 @@ impl AreaLightDisk {
                 direction,
                 0.0,
                 radius,
-                MaterialDescType::NoneType,
+                MaterialDescType::PlasticType(Plastic::from_albedo(1.0, 1.0, 1.0))
             ),
+           
         }
     }
 }
@@ -994,6 +1406,8 @@ impl IsAreaLight for AreaLightDisk {
         true
     }
 }
+// esto es lo que tengo que variar de momento...
+// yo creo escribo un  inteface generico y ya vere como lo hago depues
 
 impl GetShape for AreaLightDisk {
     fn get_shape(&self) -> Option<Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>> {
@@ -1007,7 +1421,8 @@ impl GetEmission for AreaLightDisk {
         //  tengo  que poner la luz mirando al suelo  de modo que de bien
 
         if hit.unwrap().prev.unwrap().dot(hit.unwrap().normal) > 0.0 {
-            Srgb::new(1.0, 1.0, 1.0)
+            self.color
+            
         } else {
             Srgb::new(0.0, 0.0, 0.0)
         }
@@ -1053,9 +1468,7 @@ impl SampleLightIllumination for AreaLightDisk {
         Option<Point3<f64>>,
     ) {
         let psample = self.disk.sample(phit.psample);
-        // println!("pt  in plane   {:?}" , psample.0);
-        //   println!("dir in plane   {:?}" , psample.1);
-        //   println!("pdf          : {:?}" , psample.2);
+       
         let ptplane = psample.0;
 
         let ptnormal = psample.1;
@@ -1066,7 +1479,7 @@ impl SampleLightIllumination for AreaLightDisk {
             pdf = 0.0;
         } else {
             vnext = vnext.normalize();
-            // println!("{:?}" ,vnext);
+           
             let num = (ptplane - phit.hit.point).magnitude2();
             let w = -vnext;
             let den = w.dot(ptnormal).abs();
@@ -1078,12 +1491,15 @@ impl SampleLightIllumination for AreaLightDisk {
                 pdf = pdf * pdfrat
             }
         }
-        let vnext = (ptplane - phit.hit.point).normalize();
-        //  L(normal, vnext);
-        let Ld = self.color;
-
-        // (Vector3::new(0.0,0.0,0.0),Srgb::new(0.0,0.0,0.0), 0.0,None)
-        (vnext, Ld, pdf, None, Some(psample.0))
+        let vnext = (ptplane - phit.hit.point).normalize(); 
+        
+        let  mut Ld = self.color; 
+        //TODO: esta normal latengo que meter en el constructor de disk
+       if self.disk.trafo_vec_to_world(Vector3::new(0.0,0.0,1.0)).normalize().dot(-vnext) < 0.0{
+        Ld = Srgb::new(0.0,0.0,0.0);
+       }
+     
+        (ptnormal, Ld, pdf, Some( Ray::new(phit.hit.point, vnext) ), Some(psample.0))
     }
     fn getPositionws(&self) -> Point3<f64> {
         panic!("")
@@ -1092,7 +1508,51 @@ impl SampleLightIllumination for AreaLightDisk {
 
 
 
+impl SampleEmission for AreaLightDisk{
+    fn sample_emission(&self, record: RecordSampleLightEmissionIn  )-> RecordSampleLightEmissionOut {
+        let recordshape = self.disk.sample(record.psample0);
+        
+        let n = recordshape.1.normalize();
+        let v = CosSampleH2(&record.psample1);
+       let pdfdir = CosSampleH2Pdf(v.z);
+   
+       let ( v0, v1 ) = coord_system(n);
+       let dir = v.x * v0 + v.y * v1 + v.z * n;
+    
+      let  mut L : Srgb;
+      if n.dot(dir) > 0.0 {
+         L = self.color;
+       
+      }else{
+         L = Srgb::new(0.0,0.0,0.0);
+      }
+     
+        RecordSampleLightEmissionOut{
+            Lemission:L,
+            pdfdir,
+            pdfpos:recordshape.2,
+            n:recordshape.1.normalize(),
+            ray:Some(Ray::new(recordshape.0, dir.normalize())),
+        }
+    }
+}
 
+
+
+
+impl  PdfEmission for AreaLightDisk{
+    fn pdf_emission(&self , rec :  RecordPdfEmissionIn ) -> RecordPdfEmissionOut {
+       
+       
+       let z =rec.n.dot(rec.ray.unwrap().direction);
+       RecordPdfEmissionOut::new( 1.0/self.disk.area(), CosSampleH2Pdf(z));
+       RecordPdfEmissionOut::new( 1.0/self.disk.area(), CosSampleH2Pdf(rec.n.dot(rec.ray.unwrap().direction) ))
+        
+       
+      
+    } 
+    
+}
 
 
 #[derive(Clone, Debug)]
@@ -1172,15 +1632,15 @@ impl SampleLightIllumination for AreaLightSphere {
         &self,
         phit: &RecordSampleLightIlumnation,
     ) -> (
-        Vector3<f64>,
+        Vector3<f64>, // normal vector in point sampled in sphere with phit.point2d sample
         Srgb,
         f64,
-        Option<Ray<f64>>,
+        Option<Ray<f64>>, //from phit.point to sample point in sphere
         Option<Point3<f64>>,
     ) {
  
         
-        let psample = self.sphere.sample(phit.hit.point, phit.psample);
+        let psample = self.sphere.sample(  phit.psample);
         
         let ptsphere = psample.0;
         let ptnormal = psample.1;
@@ -1196,12 +1656,13 @@ impl SampleLightIllumination for AreaLightSphere {
             let vnext = (ptsphere - phit.hit.point).normalize();
         //  L(normal, vnext);
              let mut  Ld =  Srgb::new(0.0,0.0,0.0);
-            let w = -vnext;
-            let den = w.dot(ptnormal) > 0.0 ;
+            // let w = -vnext;
+            let den = vnext.dot(-ptnormal) > 0.0 ;
             if den {
                 Ld  = self.color;
             }
-            (vnext, Ld, pdf, None, Some(psample.0))
+           ;
+            (vnext, Ld, pdf,  Some(Ray::new(phit.hit.point,vnext)), Some(psample.0))
 
             
         }
@@ -1633,6 +2094,10 @@ pub
     fn mulSrgb(a: Srgb, b: Srgb) -> Srgb {
         Srgb::new(a.red * b.red, a.green * b.green, a.blue * b.blue)
     }
+    pub
+    fn mulLinearSrgb(a:  LinSrgb<f64>, b: Srgb) -> Srgb {
+        Srgb::new(a.red as f32 * b.red, a.green   as f32 * b.green, a.blue  as f32 * b.blue)
+    }
 
     pub fn mulVecBySrgb(v: Vec<f64>, b: Srgb) ->  Vec<f64>{
        vec! [ v[0]  * b.red as f64, v[1]  * b.green as f64 , v[2]   * b.blue as f64]
@@ -1744,17 +2209,20 @@ pub
                 return Srgb::new(0.0, 0.0, 0.0);
             }
         }
-
-        let vnext = samplelight.0;
-        let reflect = hit.normal.dot(-ray.direction) * hit.normal.dot(vnext) > 0.0;
+ 
+        // let vnext = samplelight.0;
+      
+        // let reflect = hit.normal.dot(-ray.direction) * hit.normal.dot(vnext) > 0.0;
+        let vnext = samplelight.3.unwrap().direction;
+        let reflect = hit.normal.dot(-ray.direction) * hit.normal.dot(samplelight.3.unwrap().direction) > 0.0;
         let mut bsdf_fr;
         let mut bsdf_pdf = 0.0;
         if reflect == true {
-            bsdf_fr = hit.material.fr(-ray.direction, vnext);
+            bsdf_fr = hit.material.fr(-ray.direction, samplelight.3.unwrap().direction);
             let absdot = vnext.dot(hit.normal).abs();
             bsdf_fr = Self::mulScalarSrgb(bsdf_fr, absdot as f32);
 
-            bsdf_pdf = hit.material.pdf((-ray.direction).normalize(), vnext);
+            bsdf_pdf = hit.material.pdf((-ray.direction).normalize(), samplelight.3.unwrap().direction);
         } else {
             return  Srgb::new(0.0, 0.0, 0.0);
         }
@@ -1765,8 +2233,7 @@ pub
         //  Ld += f * Li * weight / lightPdf;
         let fpartial = Self::mulSrgb(samplelight.1, bsdf_fr);
         let res = Self::mulScalarSrgb(fpartial, ratio as f32);
-
-        let vnext = samplelight.0;
+ 
         if false {
             println!("psample:  {:?}", usamplelight.clone());
             println!("               wi:  {:?}", vnext);
@@ -1780,6 +2247,7 @@ pub
 
         return res;
     }
+
     pub fn samplebsdf(
         ray: &Ray<f64>,
         scene: &Scene<f64>,
@@ -1810,6 +2278,111 @@ pub
         }
         Srgb::new(0.0, 0.0, 0.0)
     }
+
+
+
+
+
+
+
+    pub fn samplelight1(
+        ray: &Ray<f64>,
+        scene: &Scene1,
+        hit: &HitRecord<f64>,
+        light: Light,
+        usamplelight: &(f64, f64),
+    ) -> Srgb {
+        let samplelight =
+            light.sampleIllumination(&RecordSampleLightIlumnation::new(*usamplelight, *hit));
+            // std::cout << "      EstimateDirect uLight:" << uLight << " -> Li: " << Li << ", wi: "<< wi << ", pdf: " << lightPdf;
+       //      println!("      EstimateDirect uLight {:?} wi {:?} pdf:  {:?}",samplelight.1,  samplelight.3.unwrap().direction, samplelight.2);
+        if true {
+            //arealight.is_background_area_light()
+            let pointinLight = samplelight.4.unwrap();
+            let occlusionRay = Ray::new(hit.point, (pointinLight - hit.point).normalize());
+            let occ = new_interface_for_intersect_occlusion(&occlusionRay, scene,&pointinLight).unwrap();
+            // let occ = scene
+            //     .intersect_occlusion(&occlusionRay, &pointinLight)
+            //     .unwrap();
+            if occ.0 == true {
+                return Srgb::new(0.0, 0.0, 0.0);
+            }
+        }
+
+        let vnext = samplelight.3.unwrap().direction;
+        let reflect = hit.normal.dot(-ray.direction) * hit.normal.dot(vnext) > 0.0;
+        let mut bsdf_fr;
+        let mut bsdf_pdf = 0.0;
+            if reflect == true {
+            bsdf_fr = hit.material.fr(-ray.direction, vnext);
+            let absdot = vnext.dot(hit.normal).abs();
+            bsdf_fr = Self::mulScalarSrgb(bsdf_fr, absdot as f32);
+
+            bsdf_pdf = hit.material.pdf((-ray.direction).normalize(), vnext);
+        } else {
+            return  Srgb::new(0.0, 0.0, 0.0);
+        }
+
+        let w = powerHeuristic(samplelight.2, bsdf_pdf);
+
+        let ratio = (w / samplelight.2);
+        //  Ld += f * Li * weight / lightPdf;
+        let fpartial = Self::mulSrgb(samplelight.1, bsdf_fr);
+        let res = Self::mulScalarSrgb(fpartial, ratio as f32);
+
+        let vnext = samplelight.0;
+        if false {
+            // println!("psample:  {:?}", usamplelight.clone());
+            // println!("               wi:  {:?}", vnext);
+            // println!("               Li:  {:?}", samplelight.1);
+            //
+             println!("                 bsdf f:  {:?}", bsdf_fr);
+           
+             println!("                 powerHeuristic:  {:?}", w);
+             println!("                 Ld res,{:?}", res);
+         
+             println!("                 pdf Light:  {:?}", samplelight.2);
+             println!("                 bsdf pdf:  {:?}", bsdf_pdf);
+        }
+
+        return res;
+    }
+    pub fn samplebsdf1(
+        ray: &Ray<f64>,
+        scene: &Scene1,
+        hit: &HitRecord<f64>,
+         light: Light,
+        usamplebsdf: &(f64, f64),
+    ) -> Srgb {
+
+        let recout = hit
+            .material
+            .sample(RecordSampleIn::from_hitrecord(*hit, ray, *usamplebsdf));
+       
+        let absdot = recout.next.dot(hit.normal).abs();
+        let bsdfsamplef = LigtImportanceSampling::mulScalarSrgb(recout.f, absdot as f32);
+       // println!(" BSDF / phase sampling f {:?} {:?}" ,   bsdfsamplef ,  recout.pdf );
+        fn isBlack(c: Srgb) -> bool {
+            c.red == 0.0 && c.green == 0.0 && c.blue == 0.0
+        }
+        if !isBlack(bsdfsamplef) && recout.pdf > 0.0 {
+            let pdflight = light.pdfIllumination1(hit, scene, recout.next);
+           
+            let fromsurfacetolight =  new_interface_for_intersect_scene(&recout.newray.unwrap(), scene);
+            
+            // fromsurfacetolight.unwrap().is_emision.unwrap() esto deberia decir si la luz del parametro light es la misma que la luz que hemos encontrado en la intersection!
+            if pdflight > 0.0 && fromsurfacetolight.is_some() && fromsurfacetolight.unwrap().is_emision.unwrap(){
+                let Lemited = light.get_emission(Some(*hit), &recout.newray.unwrap());
+                let w = powerHeuristic(recout.pdf, pdflight);
+
+                let aux = LigtImportanceSampling::mulSrgb(bsdfsamplef, Lemited);
+                return LigtImportanceSampling::mulScalarSrgb(aux, (w / recout.pdf) as f32);
+            }
+        }
+        Srgb::new(0.0, 0.0, 0.0)
+    }
+
+   
 }
 
 pub fn generateSamplesDeterministic(nsamples: u32) -> Vec<(f64, f64)> {
@@ -1826,6 +2399,19 @@ pub fn generateSamplesDeterministic(nsamples: u32) -> Vec<(f64, f64)> {
 
 pub fn generateSamplesWithSamplerGather(
     sampler: &mut Box<dyn Sampler>,
+    nsamples: u32,
+) -> Vec<((f64, f64), (f64, f64))> {
+    let mut vec: Vec<((f64, f64), (f64, f64))> = vec![];
+    for sample in 1..nsamples {
+        let slight = sampler.get2d();
+        let sbsdf = sampler.get2d();
+        vec.push((slight, sbsdf))
+    }
+    vec
+}
+
+pub fn generateSamplesWithSamplerGather1(
+    sampler: & mut SamplerType,
     nsamples: u32,
 ) -> Vec<((f64, f64), (f64, f64))> {
     let mut vec: Vec<((f64, f64), (f64, f64))> = vec![];
@@ -1952,105 +2538,215 @@ fn testing_area_light_background() {
 }
  
 #[test]
-fn testing_area_light_disk() {
+fn testing_area_light_new_interface() {
     let mut sampleruniform :  Box<dyn Sampler> =  Box::new(SamplerUniform::new(((0, 0), (1 as u32,1 as u32)),32, false, Some(0)));
-    fn addSrgb(a: Srgb, b: Srgb) -> Srgb {
-        Srgb::new(a.red + b.red, a.green + b.green, a.blue + b.blue)
+   
+   
+
+
+
+
+
+
+
+
+        
+    if false{
+        
+   
+
+
+        let mut sampler  = SamplerType::UniformType( SamplerUniform::new(((0, 0), (8 as u32, 8 as u32)),8,false,Some(0)) );
+        // let arealightsphere = Light::AreaLightSphere(AreaLightSphere::new(Vector3::new(0.0,3.0,0.0),1.0, Srgb::new(1.0,1.0,1.0)));
+ 
+    // let  c = Cylinder::new(Vector3f::new(0.0, 0.0,  3.0), mat3rot,-1.0, 1.0,1.0, materials::MaterialDescType::NoneType);
+ //   New_Interface_AreaLight ::new(  Srgb::new(1.0,1.0,1.0),PrimitiveType::CylinderType(   Cylinder::new(Vector3::new( 0.0000,4.0,0.0000),Matrix3::from_angle_x(Deg( 0.0)),-1.0, 1.0, 1.0,MaterialDescType::NoneType)));
+        let scene  = Scene1::make_scene(
+            8,8 ,
+            
+            vec![
+                 Light::New_Interface_AreaLightType(
+                    New_Interface_AreaLight ::new(  Srgb::new(1.0,1.0,1.0),
+                    PrimitiveType::CylinderType(   Cylinder::new(Vector3::new( -1.0000,8.0,-2.0000),Matrix3::from_angle_x(Deg( 0.0)),-1.0, 1.0, 1.0,MaterialDescType::NoneType)),1)
+  
+                    //New_Interface_AreaLight ::new(  PrimitiveType::CylinderType(   Cylinder::new(Vector3::new( 0.0000,4.0,0.0000),Matrix3::from_angle_x(Deg( 0.0)),-1.0, 1.0, 1.0,MaterialDescType::NoneType)))
+             //  New_Interface_AreaLight ::new( Srgb::new(1.0,1.0,1.0), PrimitiveType::SphereType( Sphere::new(Vector3::new( 0.0000,5.0,0.0000),2.0,   MaterialDescType::NoneType)))),
+           //   New_Interface_AreaLight ::new( Srgb::new(1.0,1.0,1.0), PrimitiveType::DiskType(   Disk::new(Vector3::new( 0.0000,4.0,0.0000),Vector3::new(0.0, -1.0, 0.0),0.0, 2.0, MaterialDescType::NoneType))))
+              
+                // Light::New_Interface_AreaLightType(New_Interface_AreaLight ::new(Srgb::new(1.0,1.0,1.0),PrimitiveType::SphereType( Disk::new(Vector3::new( 0.0000,1.0,0.0000),Vector3::new(0.0, -1.0, 0.0),0.0, 100.0, MaterialDescType::NoneType)))))
+                //  Light::PointLight(PointLight {iu: 4.0,positionws: Point3::new(0.00004,2.20,0.0),color: Srgb::new(35.190,35.190, 35.190),}
+            )
+                ], 
+            vec![
+                // PrimitiveType::SphereType(Spheref64::new(Vector3f::new(-0.5,0.0,2.0), 0.40, MaterialDescType::PlasticType(Plastic::from_albedo(1.0,1.0,0.0)))),
+                //    PrimitiveType::SphereType(Spheref64::new(Vector3f::new(0.5,0.0,2.0), 0.40, MaterialDescType::PlasticType(Plastic::from_albedo(0.0,1.0,1.0)))),
+                    PrimitiveType::DiskType( Disk::new(Vector3::new( 0.00001, 0.0000,0.00001),Vector3::new(0.0, 1.0, 0.0),0.0, 100.0, MaterialDescType::PlasticType(Plastic::from_albedo(1.0,1.00,1.00))))
+                ], 
+            1,1);
+
+            let nsamples =1;
+            let ray = Ray::new(
+                Point3::new(0.001, 0.10, 0.001),
+                Vector3::new(0.0, -1.0, 0.0).normalize(),
+            );
+            if let Some(hit) = new_interface_for_intersect_scene(&ray, &scene) {
+                let mut newLd: Vec<f32> = vec![0.0; 3];
+                let vecsamples = generateSamplesDeterministic(nsamples);
+                
+                for isample in 0..1024 {
+                    // let p = isample;  
+                  
+                    sampleruniform.get1d();
+                    let psample  = sampleruniform.get2d();
+                    println!("psample {:?}", psample);
+                    // let p =  psample;
+                    let p = psample;
+                  
+        // new_interface_estimatelights(&scene, hit, r, &mut sampler)
+       // mañana tengo que comprobar distintos samples...distintas distancias a la esferea. hacer el sampleo para el disco y despues el cindro!
+                    let mut accpartial:Srgb=Srgb::new(0.,0.,0.);
+
+                    let resnewe = LigtImportanceSampling::samplelight1(&ray, &scene, &hit, scene.lights[0].clone(), &p);
+                        updateL(&mut newLd, resnewe); 
+                        accpartial = LigtImportanceSampling::addSrgb(accpartial, resnewe);
+                    let isbsdfsampleable =   scene.lights[0].is_arealight() ||   scene.lights[0].is_background_area_light() ;
+
+                    if  isbsdfsampleable{
+                        let resnewe  = LigtImportanceSampling::samplebsdf1(&ray, &scene, &hit,scene.lights[0].clone(),&p);
+                        if !isBlack(resnewe){
+                            updateL(&mut newLd,resnewe);
+                            accpartial = LigtImportanceSampling::addSrgb(accpartial, resnewe);
+                            // println!("bsdf sample : {:?} res {:?}",p, resnewe.red);
+                        } 
+                   } 
+                   println!(" {}   accpartial   {} ",isample,  accpartial .red);
+                
+                }
+                   
+                println!("       Ld {}", newLd[0]);
+            
+        
+        
+            }
+        
+    }
+    if false {
+        
+        let mut sampler  = SamplerType::UniformType( SamplerUniform::new(((0, 0), (8 as u32, 8 as u32)),8,false,Some(0)) );
+        // let arealightsphere = Light::AreaLightSphere(AreaLightSphere::new(Vector3::new(0.0,3.0,0.0),1.0, Srgb::new(1.0,1.0,1.0)));
+    // let  c = Cylinder::new(Vector3f::new(0.0, 0.0,  3.0), mat3rot,-1.0, 1.0,1.0, materials::MaterialDescType::NoneType);
+ //   New_Interface_AreaLight ::new(  Srgb::new(1.0,1.0,1.0),PrimitiveType::CylinderType(   Cylinder::new(Vector3::new( 0.0000,4.0,0.0000),Matrix3::from_angle_x(Deg( 0.0)),-1.0, 1.0, 1.0,MaterialDescType::NoneType)));
+        let scene  = Scene1::make_scene(
+            8,8 ,
+            
+            vec![
+           //     Light::New_Interface_AreaLightType ( New_Interface_AreaLight ::new( Srgb::new(1.0,1.0,1.0), PrimitiveType::SphereType( Sphere::new(Vector3::new( 2.0000,4.0,2.0000),1.0,   MaterialDescType::NoneType))))
+               //  Light::New_Interface_AreaLightType(New_Interface_AreaLight ::new(  Srgb::new(1.0,1.0,1.0),PrimitiveType::CylinderType(   Cylinder::new(Vector3::new(  0., 0.0, 0.),Matrix3::from_angle_x(Deg( 0.0)),-1.0, 1.0, 1.0,MaterialDescType::NoneType)))  ),
+  
+           
+               Light::New_Interface_AreaLightType (  
+                        New_Interface_AreaLight ::new( Srgb::new(1.0,1.0,1.0), 
+                        PrimitiveType::DiskType(   Disk::new(Vector3::new( 0.0000,4.0,0.0000),Vector3::new(0.0, -1.0, 0.0),0.0, 1.0, MaterialDescType::NoneType)),1))
+              
+                // Light::New_Interface_AreaLightType(New_Interface_AreaLight ::new(Srgb::new(1.0,1.0,1.0),PrimitiveType::SphereType( Disk::new(Vector3::new( 0.0000,1.0,0.0000),Vector3::new(0.0, -1.0, 0.0),0.0, 100.0, MaterialDescType::NoneType)))))
+                //  Light::PointLight(PointLight {iu: 4.0,positionws: Point3::new(0.00004,2.20,0.0),color: Srgb::new(35.190,35.190, 35.190),}
+          
+                ], 
+            vec![
+                // PrimitiveType::SphereType(Spheref64::new(Vector3f::new(-0.5,0.0,2.0), 0.40, MaterialDescType::PlasticType(Plastic::from_albedo(1.0,1.0,0.0)))),
+                //    PrimitiveType::SphereType(Spheref64::new(Vector3f::new(0.5,0.0,2.0), 0.40, MaterialDescType::PlasticType(Plastic::from_albedo(0.0,1.0,1.0)))),
+                   PrimitiveType::DiskType( Disk::new(Vector3::new( 0.00001, 0.0000,0.00001),Vector3::new(0.0, 1.0, 0.0),0.0, 100., MaterialDescType::PlasticType(Plastic::from_albedo(1.0,1.00,1.00))))
+                ], 
+            1,1);
+
+            let nsamples =1;
+            let ray = Ray::new(
+                Point3::new(2.001, 0.10, 2.001),
+                Vector3::new(0.0, -1.0, 0.0).normalize(),
+            );
+            if let Some(hit) = new_interface_for_intersect_scene(&ray, &scene) {
+                let mut newLd: Vec<f32> = vec![0.0; 3];
+                
+             
+                for isample in 0..1024 {
+                    // let p = isample;  
+                  
+                    sampleruniform.get1d();
+                    let psample  = sampleruniform.get2d();
+                    println!("psample {:?}", psample);
+                  let p =  psample;
+                    // let p = psample;
+                    
+                  
+        // new_interface_estimatelights(&scene, hit, r, &mut sampler)
+       // mañana tengo que comprobar distintos samples...distintas distancias a la esferea. hacer el sampleo para el disco y despues el cindro!
+                    let mut accpartial:Srgb=Srgb::new(0.,0.,0.);
+
+                    let resnewe = LigtImportanceSampling::samplelight1(&ray, &scene, &hit, scene.lights[0].clone(), &p);
+                        updateL(&mut newLd, resnewe); 
+                        accpartial = LigtImportanceSampling::addSrgb(accpartial, resnewe);
+                    let isbsdfsampleable =   scene.lights[0].is_arealight() ||   scene.lights[0].is_background_area_light() ;
+
+                    if  isbsdfsampleable{
+                        let resnewe  = LigtImportanceSampling::samplebsdf1(&ray, &scene, &hit,scene.lights[0].clone(),&p);
+                        if !isBlack(resnewe){
+                            updateL(&mut newLd,resnewe);
+                            accpartial = LigtImportanceSampling::addSrgb(accpartial, resnewe);
+                            // println!("bsdf sample : {:?} res {:?}",p, resnewe.red);
+                        } 
+                   } 
+                   println!(" {}   accpartial   {} ",isample,  accpartial .red);
+                
+                }
+                   
+                println!("       Ld {}", newLd[0]);
+            
+        
+        
+            }
+        
     }
 
-    fn mulSrgb(a: Srgb, b: Srgb) -> Srgb {
-        Srgb::new(a.red * b.red, a.green * b.green, a.blue * b.blue)
-    }
-    fn mulScalarSrgb(a: Srgb, b: f32) -> Srgb {
-        Srgb::new(a.red * b, a.green * b, a.blue * b)
-    }
-
-    let camera = Camera::new(
-        Point3::new(0.0, 0.0, 1.5),
-        Point3::new(0.0, 0.0, 0.0),
-        Vector3::new(0.0, 1.0, 0.0),
-        90.0,
-        1.0f64 / 1.0f64,
-    );
-    let arealightsphere = Light::AreaLightSphere(AreaLightSphere::new(Vector3::new(0.0,3.0,0.0),1.0, Srgb::new(1.0,1.0,1.0)));
-    let distantlight = Light::AmbientLightType(AmbientLight::new(Vector3::new(0.0,1.0,0.0), Srgb::new(1.0,1.0,1.0)));
-    let arealightdisk = Light::AreaLightDiskType(AreaLightDisk::new(
-        Vector3::new(0.0, 1.0, 0.0),
-        Vector3::new(0.0, -1.0, 0.0),
-        1.0,
-        Srgb::new(0.5, 0.5, 0.5),
-    ));
-    let disk = Disk::new(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(0.0, 1.0, 0.0),
-        0.0,
-        100.0,
-        MaterialDescType::PlasticType(Plastic::from_albedo(1.0, 1.0, 1.0)),
-    );
-    let diskptr = &(Box::new(disk) as Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>);
-
-    let plane2 = Plane::new(
-        Vector3::new(0.0, 0.0, 0.0),
-        Vector3::new(0.0, 1.0, 0.0),
-        1.0,
-        1.0,
-        MaterialDescType::PlasticType(Plastic::from_albedo(1.0, 1.0, 1.0)),
-    );
-    let planeptr2 = &(Box::new(plane2) as Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>);
-    let primitivesIntersections: Vec<&Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>> =
-        vec![diskptr];
-
-    let primitives = vec![];
-    let scene: Scene<f64> = Scene::make_scene1(
-        128,
-        128,
-        vec![
-            distantlight.clone()
-        //     arealightsphere.clone()
-            // arealightdisk.clone()
-        ],
-        primitives,
-        primitivesIntersections,
-        1,
-        1,
-        None,
-    );
-
-    let ray = Ray::new(
-        Point3::new(0.00001, 1.0, 1.00001),
-        Vector3::new(0.0, -1.0, 0.0).normalize(),
-    );
-
-    if let Some(hit) = interset_scene(&ray, &scene) {
-        let mut newLd: Vec<f32> = vec![0.0; 3];
-        let vecsamples = generateSamplesDeterministic(8);
-        for isample in vecsamples.into_iter() {
-            let p = isample;  
-             let Ld =  estimatelights(&scene,   hit, &ray,&mut sampleruniform);
-            println!("{:?}",Ld);
-            // let samplelight =arealightsphere.sampleIllumination(&RecordSampleLightIlumnation::new(p, hit));
-            // let pdflight = arealightsphere.pdfIllumination(&hit, &scene, samplelight.0);
-            // println!("v {:?}", p);
-            // println!("  wi         {:?}", samplelight.0);
-            // println!("  Li rgb       {:?}", samplelight.1);
-            // println!("  pdf       {:?}", samplelight.2);
-            // println!("  pdf:pdfli {}  ", pdflight);
 
 
-            // let resnewe =
-            //     LigtImportanceSampling::samplelight(&ray, &scene, &hit, arealightsphere.clone(), &p);
-            // updateL(&mut newLd, resnewe);
-            // if false {
-            //     //    let resnewe  = LigtImportanceSampling::samplebsdf(&ray, &scene, &hit,arealightdisk.clone(),&psamplebsdf);
-            //     //    updateL(&mut newLd,resnewe);
-            // }
+    // estimate lights 
+    if true {
+        let mut sampler  = SamplerType::UniformType( SamplerUniform::new(((0, 0), (8 as u32, 8 as u32)),8,false,Some(0)) );
+        let scene  = Scene1::make_scene(
+            8,8 ,
+            
+            vec![
+                // Light::New_Interface_AreaLightType ( New_Interface_AreaLight::new( Srgb::new(1.0,1.0,1.0),PrimitiveType::SphereType( Sphere::new(Vector3::new( 0.0000,4.0,0.0000),1.0,   MaterialDescType::NoneType)),8)),
+                Light::New_Interface_AreaLightType(New_Interface_AreaLight ::new(Srgb::new(4.0,4.0,4.0),PrimitiveType::DiskType(Disk::new(Vector3::new( 0.0000,0.3,2.5000),Vector3::new(0.0, -1.0, 0.0),0.0, 0.5, MaterialDescType::NoneType)),4)),
+           
+      //         Light::New_Interface_AreaLightType (  New_Interface_AreaLight ::new( Srgb::new(1.0,1.0,1.0),PrimitiveType::DiskType(   Disk::new(Vector3::new( 0.0000,4.0,0.0000),Vector3::new(0.0, -1.0, 0.0),0.0, 2.0, MaterialDescType::NoneType)),8))
+              
+                // Light::New_Interface_AreaLightType(New_Interface_AreaLight ::new(Srgb::new(1.0,1.0,1.0),PrimitiveType::SphereType( Disk::new(Vector3::new( 0.0000,1.0,0.0000),Vector3::new(0.0, -1.0, 0.0),0.0, 100.0, MaterialDescType::NoneType)))))
+                //  Light::PointLight(PointLight {iu: 4.0,positionws: Point3::new(0.00004,2.20,0.0),color: Srgb::new(35.190,35.190, 35.190),}
+          
+                ], 
+            vec![
+                // PrimitiveType::SphereType(Spheref64::new(Vector3f::new(-0.5,0.0,2.0), 0.40, MaterialDescType::PlasticType(Plastic::from_albedo(1.0,1.0,0.0)))),
+                //    PrimitiveType::SphereType(Spheref64::new(Vector3f::new(0.5,0.0,2.0), 0.40, MaterialDescType::PlasticType(Plastic::from_albedo(0.0,1.0,1.0)))),
+              //     PrimitiveType::DiskType( Disk::new(Vector3::new( 0.00001, 0.0000,0.00001),Vector3::new(0.0, 1.0, 0.0),0.0, 100., MaterialDescType::PlasticType(Plastic::from_albedo(1.0,1.00,1.00))))
+             PrimitiveType::SphereType(Spheref64::new(Vector3f::new(0.0,-0.7,2.50), 0.20, MaterialDescType::PlasticType(Plastic::from_albedo(0.0,1.0,1.0)))),
+              PrimitiveType::DiskType( Disk::new(Vector3::new( 0.0000,-1.0,0.0000),Vector3::new(0.0, 1.0, 0.0),0.0, 100.0, MaterialDescType::PlasticType(Plastic::from_albedo(1.0,1.00,1.00))))
+                ], 
+            1,1);
+           
+        let ray = Ray::new(Point3::new(0.001, -0.950,2.5),Vector3f::new(0.,-1.0,0.0 ));
+        if let Some(hit) = new_interface_for_intersect_scene(&ray, &scene) {
+            if hit.is_emision.unwrap(){
+                println!("->{:?}",   hit.emission);
+                
+            }
+            let Ld =  new_interface_estimatelights(&scene, hit, &ray, &mut sampler, None, false);
+            
+            println!("->{:?}", Ld);
+           
         }
-        // println!(
-        //     "       RESULTADO FINALLLL!          Ld res,{:?}",
-        //     newLd[0] / (64 as f32)
-        // );
-        // println!("");
     }
+
 }
 
 #[test]

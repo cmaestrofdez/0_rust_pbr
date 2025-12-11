@@ -44,11 +44,14 @@ use crate::Lights::AreaLightSphere;
 use crate::Lights::BackgroundAreaLight;
 use crate::Lights::GetEmission;
 use crate::Lights::GetShape;
+use crate::Lights::GetShape1;
+use crate::Lights::IsAmbientLight;
 use crate::Lights::IsAreaLight;
 use crate::Lights::IsBackgroundAreaLight;
 use crate::Lights::RecordSampleLightIlumnation;
 use crate::Lights::SpotLight;
 use crate::Point2i;
+use crate::Point3f;
 use crate::assert_delta;
 use crate::imagefilm::FilterFilm;
 use crate::imagefilm::ImgFilm;
@@ -70,6 +73,7 @@ use crate::sampler::Sampler;
 use crate::sampler::SamplerLd2;
 use crate::sampler::SamplerUniform;
 use crate::samplerhalton::SamplerHalton;
+use crate::scene::Scene1;
 use crate::texture::MapConstant;
 use crate::texture::MapSpherical;
 use crate::texture::MapUV;
@@ -79,6 +83,8 @@ use crate::texture::Texture2DSRgbMapConstant;
 use crate::Lights::Light;
 use crate::Lights::PointLight;
 use crate::Lights::SampleLightIllumination;
+use crate::volumentricpathtracer::volumetric::Colorf64;
+use crate::volumentricpathtracer::volumetric::MediumOutsideInside;
 use std::cell::RefCell;
 use cgmath::*;
 
@@ -108,6 +114,13 @@ impl AbsDot<f64> for Vector3<f64> {
 
 pub fn lerp<Scalar: BaseFloat>(t: Scalar, low: Scalar, hight: Scalar) -> Scalar {
     low + (hight - low) * t
+}
+
+
+pub fn lerp_color (t: f64, low: Colorf64, hight: Colorf64) ->Colorf64 {
+    // low + (hight - low) * t
+  
+    Colorf64::new(low . red + ( hight.red -  low.red) * t,low . green + ( hight.green -  low.green) * t,low . blue + ( hight.blue -  low.blue) * t)
 }
 
 pub fn clamp<Scalar: std::cmp::PartialOrd>(t: Scalar, low: Scalar, hight: Scalar) -> Scalar {
@@ -225,9 +238,13 @@ impl<'a, Scalar: BaseFloat> Scene<'a, Scalar> {
            primitives2:prims2,
         }
     }
+    pub fn get_height(&self)->usize{
+        self.height
+    }
 }
 use crate::primitives::prims::Intersection;
 use crate::primitives::prims::IntersectionOclussion;
+use crate::primitives::prims::IsEmptySpace;
 
 // returna true hay oclussion
 impl 
@@ -238,17 +255,51 @@ impl
         &self,
         ray: &Ray<f64>,
         target: &Point3<f64>,
-    ) -> Option<(bool, f64, Point3<f64>)> {
+    ) -> Option<(bool, f64, Point3<f64>, Option<MediumOutsideInside>)> {
         let mut _tcurrent = cast::<f64, f64>(f64::MAX).unwrap();
         let mut _currentpoint: Option<Point3<f64>> = None;
         for iprim in &self.primitives2 {
-            if let Some((ishit, _thit, phit)) = iprim.intersect_occlusion(ray, target) {
+            if let Some((ishit, _thit, phit, _)) = iprim.intersect_occlusion(ray, target) {
                 if (phit - ray.origin).magnitude2() < (*target - ray.origin).magnitude2() {
-                    return Some((true, _thit, phit));
+                    return Some((true, _thit, phit, None));
                 }
             }
         }
-        Some((false, cast::<f64, f64>(f64::MAX).unwrap(), Point3::new(cast::<f64,f64>(f64::MAX).unwrap(),cast::<f64, f64>(f64::MAX).unwrap(),cast::<f64, f64>(f64::MAX).unwrap())))
+        Some((false, 
+            cast::<f64, f64>(f64::MAX).unwrap(), 
+            Point3::new(cast::<f64,f64>(f64::MAX).unwrap(),cast::<f64, f64>(f64::MAX).unwrap(),cast::<f64, f64>(f64::MAX).unwrap()),None))
+    }
+}
+impl IsEmptySpace for  Scene<'_, f64>{
+   /// test  pub fn test_intersection_is_empty_interface
+    fn is_empty_space(&self,p0: Point3<f64>,p1 : Point3<f64>,) ->  bool {
+              
+                let ray =   Ray::from_origin_to_target(p0, p1);
+                for iprim in &self.primitives2 {
+                    let hit =   iprim.intersect(&ray, 0.00001,0.999999);  
+                    if let Some(hit) = hit  {
+                     
+                       return  false;
+                    }
+                }
+
+
+
+
+
+                for light in &self.lights{
+                    if  light.is_arealight() && !light.is_background_area_light() {
+                       let prim =   light .get_shape().unwrap();
+                     
+                       if let Some(mut hit) = prim.intersect(&ray, 0.0001, 0.999){ 
+                      
+                        return  false;
+                       }
+                    }
+                }
+            
+                true 
+        
     }
 }
 #[test]
@@ -446,6 +497,242 @@ fn test_scene_intersection_ray() {
     // }
 }
 
+
+
+
+
+
+
+
+
+#[test]
+pub fn test_intersection_is_empty_interface(){
+    
+    let maxdepth: i32 = 4+2;
+    let filmres: (u32, u32) = (32,32);
+
+     
+   
+  //   let rayTest = Ray::new(Point3f::new(0.01,0.01,0.01), Vector3f::new(0.01,0.01,1.0));
+
+     
+    let sphere = Sphere::new(
+        Vector3::new(0.0, 0.0, 2.000),
+        1.0,
+        MaterialDescType::PlasticType(Plastic::from_albedo(1.0, 1.0, 1.0)),
+    );
+
+    let sphere0smallptr =
+        &(Box::new(sphere) as Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>);
+    
+
+
+        let sphere1 = Sphere::new(
+            Vector3::new(0.0, 0.0, -1.5000),
+            1.0,
+            MaterialDescType::PlasticType(Plastic::from_albedo(1.0, 1.0, 1.0)),
+        );
+        let sphere1smallptr =
+        &(Box::new(sphere1) as Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>);
+
+
+
+    let diskescene = Disk::new(
+        Vector3::new(0.0001, -1.0, 0.0001),
+        Vector3::new(0.0, 1.0, 0.0),
+        0.0,
+        1000.0,
+        MaterialDescType::PlasticType(Plastic::from_albedo(1.0, 1.0, 1.0)),
+    );
+    let diskescene =
+        &(Box::new(diskescene) as Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>);
+
+    let primitivesIntersections: Vec<&Box<dyn PrimitiveIntersection<Output = HitRecord<f64>>>> =
+        vec![
+        sphere0smallptr,
+      diskescene,
+     sphere1smallptr
+          ];
+
+    let pointlight = Light::PointLight(PointLight {
+        iu: 4.0,
+        positionws: Point3::new(0.000, 1.01, 0.000),
+        color: Srgb::new(
+            std::f32::consts::PI,
+            std::f32::consts::PI,
+            std::f32::consts::PI,
+        ),
+    });
+
+
+
+    let arealightdisk = Light::AreaLightDiskType(
+        AreaLightDisk::new( 
+            Vector3::new(0.000,1.00,0.000 ), 
+            Vector3::new(0.0, -1.0, 0.0).normalize(),1.000,
+            Srgb::new(1.0,1.0,1.0)));
+    
+    // for  ( mut a, mut b) in std::iter::zip(0..10, 0..10){
+    //      let p = ( a as f64 / 10.0 , b as f64 / 10.0);
+    //      let recout = arealightdisk.sample_emission(RecordSampleLightEmissionIn{
+    //         psample0: p,
+    //         psample1: p.clone()
+    //     });
+        
+    //    let pdfrec =  arealightdisk.pdf_emission( RecordPdfEmissionIn { n:recout.n, ray:recout.ray });
+         
+    // }
+    
+
+
+    
+    
+
+
+    let scene: &Scene<f64> = &Scene::make_scene1(
+        filmres.0 as usize,
+        filmres.1 as usize,
+        vec![arealightdisk],
+        vec![],
+        primitivesIntersections,
+        1,
+        1,
+        None,
+    );
+
+
+    // tengo qeue terminar esto . hacer los test en raytracer2.rs
+    //  dentro de la esfera distinots ejes , usando y, z, etc
+    //  despues ir a geomtry term y mirar a ver si puedo hacerlo coincidir con el ground true de pbrt 
+  let isemptyspace =   scene.is_empty_space(Point3f::new(0.401,0.401,0.001), Point3f::new(0.00001,0.00001,3.0));
+  assert_eq!(false, isemptyspace);
+  let isemptyspace =   scene.is_empty_space(Point3f::new(0.001,0.001,0.001), Point3f::new(0.001,0.001,1.0));
+  assert_eq!(true, isemptyspace);
+   
+  let isemptyspace =   scene.is_empty_space(Point3f::new(0.401,0.401,0.001), Point3f::new(0.001,0.001,-3.0));
+  assert_eq!(false, isemptyspace); 
+
+  let isemptyspace =   scene.is_empty_space(Point3f::new(0.01,0.01,0.001), Point3f::new(0.001,0.001,-0.4994610));
+  
+assert_eq!(true,isemptyspace);
+  
+  let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.0001,0.00), Point3f::new(0.001,0.001,-0.5000994610));
+  
+assert_eq!(false,isemptyspace);
+
+
+
+
+
+// { 0.132876217 , 0.999999940 , 1.92240381 }
+
+// lp = {x=-0.40650743019636038 y=-1.0000000000000000 z=-0.14321036510178961 }
+// cp = {x=0.22150484319080732 y=0.99999999999999978 z=-0.87723124712839040 }
+ 
+ 
+let isemptyspace = scene.is_empty_space(Point3f::new(0.22150484319080732 , 0.99999999999999978 , -0.87723124712839040 ), Point3f::new( -0.40650743019636038 , -1.0000000000000000 , -0.14321036510178961 ));
+if isemptyspace {
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.0001,0.00), Point3f::new(0.001,2.001,0.000994610));
+  
+assert_eq!(false,isemptyspace);
+ 
+
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.0001,0.00), Point3f::new(0.001,0.990090,0.000994610)); 
+assert_eq!(true,isemptyspace);
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.0001,0.00), Point3f::new(0.001,1.0090,0.000994610));  
+assert_eq!(false,isemptyspace);
+
+
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.0001,0.00), Point3f::new(0.001,-0.990090,0.000994610)); 
+assert_eq!(true,isemptyspace);
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.0001,0.00), Point3f::new(0.001,-1.0099010090,0.000994610));  
+println!("{:?}", isemptyspace);
+
+
+for i  in 1..32{
+   let fm64 =  i as f64 /32_f64 ;
+   let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,fm64-0.10001,0.00), Point3f::new(0.001,0.990090,0.000994610)); 
+   assert_eq!(true,isemptyspace);
+}
+
+for i  in 1..32{
+    let fm64 =  i as f64 /32_f64 ;
+    let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,fm64-0.10001,0.00), Point3f::new(0.001,1.0090090,0.000994610)); 
+    assert_eq!(false,isemptyspace);
+
+
+    let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,fm64-0.10001 ,0.00), Point3f::new(0.001,-0.990090,0.000994610)); 
+assert_eq!(true,isemptyspace);
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,fm64-0.10001 ,0.00), Point3f::new(0.001,-1.0099010090,0.000994610));  
+assert_eq!(false,isemptyspace);
+ 
+ }
+
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.10001,0.00), Point3f::new(0.001,0.990090,0.000994610)); 
+assert_eq!(true,isemptyspace);
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.10001,0.00), Point3f::new(0.001,1.0090,0.000994610));  
+assert_eq!(false,isemptyspace);
+
+// special cases
+
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.000,2.00), Point3f::new(0.001,0.0,2.100994610)); 
+assert_eq!(true,isemptyspace);
+
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.000,2.00), Point3f::new(0.001,0.0,3.100994610)); 
+assert_eq!(false,isemptyspace);
+
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.9000,2.00), Point3f::new(0.001,0.9,2.0)); 
+assert_eq!(true,isemptyspace);
+
+
+let isemptyspace =   scene.is_empty_space(Point3f::new(0.0001,0.9000,2.00), Point3f::new(0.001,1.9,2.0)); 
+assert_eq!(false,isemptyspace);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #[derive(Debug, Clone, Copy)]
 pub struct Camera<Scalar> {
     pub origin: Point3<Scalar>,
@@ -523,6 +810,21 @@ pub fn render_write_film(filename: &str, pixels: &[u8], bounds: (u32, u32)) -> s
     Ok(())
 }
  
+pub fn interset_scene_primitives(r: &Ray<f64>, scene: &Scene<f64>) -> Option<HitRecord<f64>> {
+    let mut tmin = f64::MAX;
+    let mut hitcurrent = None;
+    for  primitive_i in &scene.primitives2 {
+        if let Some(hit) = primitive_i.intersect(r, 0.0001, f64::MAX) {
+           // println!("t:{}, p:{:?} , n :{:?}", hit.t, hit.point, hit.normal);
+            if  tmin>hit.t{
+                hitcurrent =Some(hit);
+                tmin = hit.t;
+            } 
+        } 
+    }
+      
+    hitcurrent
+}
 
 pub fn interset_scene(r: &Ray<f64>, scene: &Scene<f64>) -> Option<HitRecord<f64>> {
  //  println!("{:?} , {:?}", r.origin, r.direction);
@@ -540,15 +842,18 @@ pub fn interset_scene(r: &Ray<f64>, scene: &Scene<f64>) -> Option<HitRecord<f64>
         }
      
     }
-    for lights in &scene.lights{
-        if  lights.is_arealight() && !lights.is_background_area_light() {
-           let prim =   lights .get_shape().unwrap();
+    for light in &scene.lights{
+        if  light.is_arealight() && !light.is_background_area_light() {
+           let prim =   light .get_shape().unwrap();
+         
            if let Some(mut hit) = prim.intersect(r, 0.0001, f64::MAX){
                 if  tmin>hit.t{
-                    let Lemit = lights.get_emission(Some(hit),r);
+                    let Lemit = light.get_emission(Some(hit),r);
                     hit.is_emision = Some(true);
                     hit.emission = Some(Lemit);
+                 //    hit.light = Some(light);
                     hitcurrent =Some(hit);
+
                   
                     
                     tmin = hit.t;
@@ -560,6 +865,154 @@ pub fn interset_scene(r: &Ray<f64>, scene: &Scene<f64>) -> Option<HitRecord<f64>
   
     hitcurrent
 }
+pub fn interset_scene_bdpt(r: &Ray<f64>, scene: &Scene<f64>) ->( Option<HitRecord<f64>> , Option<Light> ){
+
+    let mut tmin = f64::MAX;
+    let mut hitcurrent = None;
+    let mut lightRes:Option<Light> = None;
+    for  primitive_i in &scene.primitives2 {
+        if let Some(hit) = primitive_i.intersect(r, 0.0001, f64::MAX) {
+            
+           // println!("t:{}, p:{:?} , n :{:?}", hit.t, hit.point, hit.normal);
+            if  tmin>hit.t{
+                hitcurrent =Some(hit);
+                tmin = hit.t;
+            }
+             
+            
+        }
+     
+    }
+    for light in &scene.lights{
+        if  light.is_arealight() && !light.is_background_area_light() {
+           let prim =   light .get_shape().unwrap();
+          
+           if let Some(mut hit) = prim.intersect(r, 0.0001, f64::MAX){
+           
+                if  tmin>hit.t{
+                    let Lemit = light.get_emission(Some(hit),r);
+                    hit.is_emision = Some(true);
+                    hit.emission = Some(Lemit);
+                 //    hit.light = Some(light);
+                    hitcurrent =Some(hit);
+
+                    
+                    lightRes= Some(light.clone());
+                    tmin = hit.t;
+                // print!("");
+                }
+           }
+        }
+    } 
+   (hitcurrent,  lightRes)
+
+   
+}
+
+
+
+
+
+
+pub
+fn new_interface_for_intersect_scene__bdpt( ray: &Ray<f64>,scene: &Scene1  )-> ( Option<HitRecord<f64>> , Option<Light> ){
+    let mut tmin = f64::MAX;
+    let mut hitcurrent = None;
+    let prims =&scene.prims;
+    let lights =&scene.lights;
+    let mut lightRes:Option<Light> = None;
+    for prims in prims{
+       if let Some(hit) =  prims.intersect(ray, 0.0001, std::f64::MAX){
+            if  tmin>hit.t{
+                hitcurrent =Some(hit);
+                tmin = hit.t;
+            } 
+       }
+    }
+    
+   
+    for light in lights{
+        if  light.is_arealight() ||  light.is_ambientlight(){
+           
+          let shape =   light.get_shape1() ;
+          if let Some(mut hit) = shape.intersect(ray, 0.0001, f64::MAX){
+             if  tmin>hit.t{
+                let Lemit = light.get_emission(Some(hit),ray);
+                 hit.is_emision = Some(true);
+                hit.emission = Some(Lemit);
+                
+                 hitcurrent =Some(hit);
+
+              lightRes= Some(light.clone());
+                tmin = hit.t;
+            }
+          }
+        }
+    
+    }
+    (hitcurrent,  None)
+ }
+
+
+
+pub
+fn new_interface_for_intersect_scene__bdpt_walklight( ray: &Ray<f64>,scene: &Scene1  )-> ( Option<HitRecord<f64>> , Option<usize> ){
+    let mut tmin = f64::MAX;
+    let mut hitcurrent = None;
+    let prims =&scene.prims;
+    let lights =&scene.lights;
+    let mut lightRes:Option<usize> = None;
+    for prims in prims{
+       if let Some(hit) =  prims.intersect(ray, 0.0001, std::f64::MAX){
+            if  tmin>hit.t{
+                hitcurrent =Some(hit);
+                tmin = hit.t;
+            } 
+       }
+    }
+    
+   
+    for (i, light) in lights.iter().enumerate(){
+        if  light.is_arealight() ||  light.is_ambientlight(){
+           
+          let shape =   light.get_shape1() ;
+          if let Some(mut hit) = shape.intersect(ray, 0.0001, f64::MAX){
+             if  tmin>hit.t{
+                let Lemit = light.get_emission(Some(hit),ray);
+                 hit.is_emision = Some(true);
+                hit.emission = Some(Lemit);
+                
+                 hitcurrent =Some(hit);
+
+              
+                lightRes=  Some(i);
+                tmin = hit.t;
+            }
+          }
+        }
+    
+    }
+    (hitcurrent,  lightRes)
+ }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 pub fn get_ray_color_iteration(
     r: &mut Ray<f64>,
@@ -761,7 +1214,8 @@ pub fn render_line(
 }
 
 
-
+// map coords from raster space to sampler space (0,1)
+pub
 fn to_map(cam:&(f64, f64), w:i64, h:i64)->(f64, f64){
     let v: f64 = (((h as f64 - cam.1 as f64 - 1.0) as f64)/ (h  as f64 - 1.0));
     let u: f64 = (cam.0 as f64 / (w as  f64 - 1.0));

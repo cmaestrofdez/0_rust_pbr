@@ -5,7 +5,7 @@ use rand::{
 };
  
 
-use crate::Point2i;
+use crate::{Point2i, samplerhalton::SamplerHalton, metropolis::metropolistransport::{SamplerMetropolis, CHANNELS}};
 
 use self::custom_rng::CustomRng;
 
@@ -94,6 +94,10 @@ pub trait Sampler {
 
     fn start_pixel(&mut self, p: Point2i);
     fn start_next_sample(&mut self) -> bool;
+    fn get_dims(&self) -> (Point2i, Point2i) ;
+    // for mlt
+    fn start_stream(&mut self, channel : CHANNELS) ;
+     
 }
 pub trait Get2D{ 
     fn get2d(&mut self)->(f64,f64);
@@ -247,7 +251,10 @@ impl SamplerUniform {
         self.current_pixel
     }
     pub fn get_spp(&self) -> u32 {
-        1
+        self.spp
+    }
+    fn start_stream(&mut self, channel : CHANNELS) {
+        panic!()
     }
 }
  
@@ -262,6 +269,9 @@ impl Sampler for SamplerUniform {
         self.has_samples()
     }
 
+    fn get_dims(&self) -> (Point2i, Point2i) {
+        (Point2i::new(self.bounds.0.0 as i64, self.bounds.0.1 as i64),Point2i::new(self.bounds.1.0 as i64, self.bounds.1.1 as i64))
+    }
     // fn next_pixel_samples(&mut self, samples: &mut Vec<(f64, f64)>) {
     //     self.next_pixel_samples(samples)
     // }
@@ -286,16 +296,12 @@ impl Sampler for SamplerUniform {
     fn get_spp(&self) -> u32 {
         self.get_spp()
     }
+    fn start_stream(&mut self, channel : CHANNELS) {
+        panic!()
+    }
 }
 
-
-
-
-
-
-
-
-
+// unsafe  impl  Send for SamplerUniform {}
 
 
 
@@ -450,6 +456,9 @@ impl SamplerLd2 {
     pub fn get_current_pixel(&self) -> (u32, u32) {
         self.current_pixel
     }
+    fn start_stream(&mut self, channel : i64) {
+        panic!()
+    }
 }
 // tengo que cambiar el interface sampler,
 //     +añado 
@@ -465,6 +474,9 @@ impl Sampler for SamplerLd2 {
     }
     fn has_samples(&self) -> bool {
         self.has_samples()
+    }
+    fn get_dims(&self) -> (Point2i, Point2i) {
+        (Point2i::new(self.bounds.0.0 as i64, self.bounds.0.1 as i64),Point2i::new(self.bounds.1.0 as i64, self.bounds.1.1 as i64))
     }
 
     // fn next_pixel_samples(&mut self, samples: &mut Vec<(f64, f64)>) {
@@ -490,6 +502,9 @@ fn get2d(&mut self) -> (f64, f64) {
 
     fn get_spp(&self) -> u32 {
         self.get_spp()
+    }
+    fn start_stream(&mut self, channel : CHANNELS) {
+        panic!()
     }
 }
 
@@ -597,6 +612,9 @@ impl SamplerLd {
     pub fn get_current_pixel(&self) -> (u32, u32) {
         self.current_pixel
     }
+    fn start_stream(&mut self, channel : i64) {
+        panic!()
+    }
 }
 
 impl Sampler for SamplerLd {
@@ -608,6 +626,9 @@ impl Sampler for SamplerLd {
     }
     fn has_samples(&self) -> bool {
         self.has_samples()
+    }
+    fn get_dims(&self) -> (Point2i, Point2i) {
+        (Point2i::new(self.bounds.0.0 as i64, self.bounds.0.1 as i64),Point2i::new(self.bounds.1.0 as i64, self.bounds.1.1 as i64))
     }
 
     // fn next_pixel_samples(&mut self, samples: &mut Vec<(f64, f64)>) {
@@ -641,5 +662,135 @@ impl Sampler for SamplerLd {
 
     fn get_spp(&self) -> u32 {
         self.get_spp()
+    }
+    fn start_stream(&mut self, channel : CHANNELS) {
+        panic!()
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+pub enum  SamplerType {
+     
+    UniformType(SamplerUniform),
+    SamplerLd2Type(SamplerLd2),
+    SamplerLdType(SamplerLd),
+    SamplerHaltonType(SamplerHalton),
+    SamplerMetropolisType(SamplerMetropolis),
+}
+impl  Sampler for SamplerType {
+    fn get1d(&mut self) ->  f64 {
+        match self {
+            SamplerType::UniformType(s)=>s.get1d(),
+            SamplerType::SamplerLd2Type(s)=>s.get1d(),
+            SamplerType::SamplerLdType(s)=>s.get1d(),
+            SamplerType::SamplerHaltonType(s)=>s.get1d(),
+            SamplerType::SamplerMetropolisType(s)=>s.get1d(),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }
+    fn get2d(&mut self) -> (f64, f64) {
+        match self {
+            SamplerType::UniformType(s)=>s.get2d(),
+            SamplerType::SamplerLd2Type(s)=>s.get2d(),
+            SamplerType::SamplerLdType(s)=>s.get2d(),
+            SamplerType::SamplerHaltonType(s)=>s.get2d(),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }
+    fn get_spp(&self) -> u32 {
+        match self {
+            SamplerType::UniformType(s)=>s.get_spp(),
+            SamplerType::SamplerLd2Type(s)=>s.get_spp(),
+            SamplerType::SamplerLdType(s)=>s.get_spp(),
+            SamplerType::SamplerHaltonType(s)=>s.get_spp(),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }
+    fn get_dims(&self) -> (Point2i, Point2i) {
+        match self {
+            // SamplerType::UniformType(s)=>s.get_spp(),
+            // SamplerType::SamplerLd2Type(s)=>s.get_spp(),
+            // SamplerType::SamplerLdType(s)=>s.get_spp(),
+            SamplerType::SamplerHaltonType(s)=>s.get_dims(),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }
+    fn get_current_pixel(&self) -> (u32, u32) {
+        match self {
+            SamplerType::UniformType(s)=>s.get_current_pixel(),
+            SamplerType::SamplerLd2Type(s)=>s.get_current_pixel(),
+            SamplerType::SamplerLdType(s)=>s.get_current_pixel(),
+            SamplerType::SamplerHaltonType(s)=>s.get_current_pixel(),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }
+    fn has_samples(&self) -> bool {
+        match self {
+            SamplerType::UniformType(s)=>s.has_samples(),
+            SamplerType::SamplerLd2Type(s)=>s.has_samples(),
+            SamplerType::SamplerLdType(s)=>s.has_samples(),
+            SamplerType::SamplerHaltonType(s)=>s.has_samples(),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }
+    fn start_next_sample(&mut self) -> bool {
+        match self {
+            SamplerType::UniformType(s)=>s.start_next_sample(),
+            SamplerType::SamplerLd2Type(s)=>s.start_next_sample(),
+            SamplerType::SamplerLdType(s)=>s.start_next_sample(),
+            SamplerType::SamplerHaltonType(s)=>s.start_next_sample(),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }
+    fn start_pixel(&mut self, p: Point2i) {
+        match self {
+            SamplerType::UniformType(s)=>s.start_pixel(p),
+            SamplerType::SamplerLd2Type(s)=>s.start_pixel(p),
+            SamplerType::SamplerLdType(s)=>s.start_pixel(p),
+            SamplerType::SamplerHaltonType(s)=>s.start_pixel(p),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }    
+    fn start_stream(&mut self, channel : CHANNELS) {
+        match self {
+            SamplerType::SamplerMetropolisType(s)=>s.start_stream(channel),
+            _=>panic!("Sampler for SamplerType"),
+        }
+    }
+    
+}
+
+pub trait SeedInstance {
+     fn seed_instance(&self)->Box<SamplerType>;
+}
+impl  SeedInstance for SamplerType {
+    fn seed_instance(&self)->Box<SamplerType> {
+        match self {
+        
+            SamplerType::UniformType(s)=>{ 
+                Box::new(SamplerType::UniformType(( SamplerUniform::new(((0, 0), (32 as u32, 32 as u32)),s.spp,false,Some(0),))))
+            },
+            SamplerType::SamplerHaltonType(s)=>{
+                let pminpmax = self.get_dims();
+                 let spp = self.get_spp();
+                Box::new(SamplerType::SamplerHaltonType(SamplerHalton::new(&pminpmax.0,&pminpmax.1,spp as i64,false,)))
+            },
+            _=>  panic!("SeedInstance for SamplerType! panic! ")
+        }
     }
 }

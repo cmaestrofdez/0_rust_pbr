@@ -197,7 +197,7 @@ pub struct FilterFilmGauss{
     pub a : f64, 
 }
 impl FilterFilmGauss{
-    fn new(filterRadius:(f64, f64) , a : f64)->FilterFilmGauss{
+   pub  fn new(filterRadius:(f64, f64) , a : f64)->FilterFilmGauss{
        let factorexp =( (-a * filterRadius.0 * filterRadius.0).exp(),(-a * filterRadius.1 * filterRadius.1).exp()); 
         FilterFilmGauss{filterRadius, factorexp, a} 
     }

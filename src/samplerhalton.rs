@@ -5,7 +5,7 @@ use hexf::hexf32;
 use once_cell::sync::Lazy;
 use rand::{prelude::ThreadRng, Rng};
  
-use crate::{    sampler::{custom_rng, Sampler}};
+use crate::{    sampler::{custom_rng, Sampler}, metropolis::metropolistransport::CHANNELS};
  
 use crate::Point2i;
 pub const ONE_MINUS_EPSILON_f64: f64 =  hexf::hexf32!("0x1.fffffep-1") as f64;
@@ -233,6 +233,9 @@ pub struct SamplerHalton{
     array_2d_offset  : usize,
     samples_1d_array_sizes : Vec<usize>,
     samples_2d_array_sizes: Vec<usize>,
+    pub bpmin: Point2i,
+    pub bpmax: Point2i,
+    
 }
 impl SamplerHalton {
     pub  fn new(bpmin: &Point2i,  bpmax:&Point2i, spp : i64, sample_center : bool)->Self{
@@ -278,7 +281,13 @@ impl SamplerHalton {
             array_2d_offset:0,
             samples_1d_array_sizes:Vec::new(), 
             samples_2d_array_sizes:Vec::new(), 
+            bpmin: *bpmin,
+            bpmax:*bpmax,
+            
         }
+    }
+    pub fn  get_dims(&self)->(Point2i, Point2i){
+        (self.bpmin, self.bpmax)
     }
     pub fn compute_array_size_end(& mut self) {
         self.array_end_dim  = self.array_start_dim + self.samples_array_1d.len() as i64 + 2_i64 * self.samples_array_2d.len() as i64  
@@ -422,7 +431,9 @@ impl Sampler for SamplerHalton{
     fn has_samples(&self) -> bool {
         todo!()
     }
-
+    fn get_dims(&self) -> (Point2i, Point2i) {
+        (self.bpmin,self.bpmax)
+    }
     fn get2d(&mut self) -> (f64, f64)  {
        self.get2d()
     }
@@ -445,6 +456,9 @@ impl Sampler for SamplerHalton{
 
     fn start_next_sample(&mut self) -> bool {
         self.start_next_sample()
+    }
+    fn start_stream(&mut self, channel : CHANNELS) {
+        panic!("")
     }
 }
 

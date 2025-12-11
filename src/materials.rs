@@ -20,6 +20,7 @@ macro_rules! assert_delta {
 use crate::Lights::LigtImportanceSampling;
 use crate::samplerhalton::ONE_MINUS_EPSILON_f64;
 use crate::texture::{Texture2Df64f64MapUV, Texture2D, Mapping2d, Texture2DSRgbMapConstant, Texture2DSRgbMapUV, TexType, EvalTexture, MapUV, MapConstant};
+use crate::volumentricpathtracer::volumetric::Colorf64;
 use crate::{primitives, Lambertian, Vector3f};
 use crate::primitives::prims::{self, HitRecord};
 use crate::primitives::prims::{IntersectionOclussion, Ray,Sphere};
@@ -86,6 +87,10 @@ pub fn CosSampleH2(u: &(f64, f64))->Vector3<f64>{
    Vector3::new(sp.0, sp.1, z)
 
 }
+pub fn CosSampleH2Pdf(u:   f64)-> f64 {
+    f64::consts::FRAC_1_PI * u
+ 
+ }
 /***
  *      z|
  *       |
@@ -1682,6 +1687,8 @@ impl RecordSampleIn{
             sample : Some(sample),
         }
     }
+    
+   
 }
 impl Default for RecordSampleIn {
     fn default() -> Self {
@@ -1712,6 +1719,15 @@ impl RecordSampleOut {
         let fr = self.f;
         let b =  LigtImportanceSampling::mulScalarSrgb(fr, a as f32);
          LigtImportanceSampling::mulSrgb( transportold , b )
+    }
+    pub fn compute_transport_color(&self, transportold:Colorf64,  hit :&HitRecord<f64>)->Colorf64{
+        let absdot = hit.normal.dot(self.next).abs();
+        let pdf = self.pdf;
+        let a = absdot / pdf;
+        let fr = self.f;
+       let b =  Colorf64::new(fr.red as f64, fr.green as f64, fr.blue as f64) * a;
+        //let b =  LigtImportanceSampling::mulScalarSrgb(fr, a as f32);
+        transportold * b 
     }
 }
 impl  Default for RecordSampleOut  {
@@ -1929,7 +1945,7 @@ pub
 trait MaterialDescriptor{
      fn instantiate(  &self, p:&Point3<f64>, uv : &(f64, f64),  frame:&FrameShading)->BsdfType ;
 
-}
+} 
  
 #[derive(Debug, Clone)]
 pub enum MaterialDescType{
